@@ -68,9 +68,35 @@ gcloud run deploy proof-tamil-runner \
   --set-env-vars API_KEY_SECRET=change-me,API_KEY=demo-key,CLIENT_ID=demo-client
 ```
 
+### GitHub Actions (auto-deploy)
+This repo includes `.github/workflows/deploy.yml` which:
+- Builds the Docker image with Cloud Build
+- Deploys to Cloud Run
+
+Required GitHub secrets:
+- `GCP_PROJECT_ID`
+- `GCP_REGION`
+- `GCP_SERVICE` (e.g., proof-tamil-runner)
+- `GCP_SA_KEY` (JSON key for a deploy service account)
+- `API_KEY_SECRET`, `API_KEY`, `CLIENT_ID`
+- Optional: `RATE_LIMIT_PER_MIN` (default 60), `MAX_TEXT_LEN` (default 64)
+
 ## Pricing / plan notes
 - Free vs paid plans can be enforced by expanding the in-memory client registry and rate-limit policy.
 - Rate limits are per-client_id; adjust `RATE_LIMIT_PER_MIN` env.
+
+## GitHub Actions (auto-deploy)
+This repo includes `.github/workflows/deploy.yml` which:
+- Builds the Docker image with Cloud Build
+- Deploys to Cloud Run
+
+Required GitHub secrets:
+- `GCP_PROJECT_ID`
+- `GCP_REGION`
+- `GCP_SERVICE` (e.g., proof-tamil-runner)
+- `GCP_SA_KEY` (JSON key for a deploy service account)
+- `API_KEY_SECRET`, `API_KEY`, `CLIENT_ID`
+- Optional: `RATE_LIMIT_PER_MIN` (default 60), `MAX_TEXT_LEN` (default 64)
 
 ## Tests
 ```bash
