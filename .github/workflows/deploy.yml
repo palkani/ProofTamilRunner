@@ -2,34 +2,33 @@ name: Deploy to Cloud Run
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
-  SERVICE: ${{ secrets.GCP_SERVICE }}
-  REGION: ${{ secrets.GCP_REGION }}
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: ${{ secrets.GCP_REGION }}
+  SERVICE: ${{ secrets.GCP_SERVICE }}
+  REPO: cloud-run-repo
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up gcloud
+      - name: Authenticate to GCP
         uses: google-github-actions/setup-gcloud@v1
         with:
           project_id: ${{ env.PROJECT_ID }}
           service_account_key: ${{ secrets.GCP_SA_KEY }}
           export_default_credentials: true
 
-      - name: Configure docker auth
-        run: gcloud auth configure-docker
-
-      - name: Build and push image
+      - name: Build & Push Image
         run: |
-          IMAGE=gcr.io/${PROJECT_ID}/${SERVICE}:$GITHUB_SHA
-          gcloud builds submit --tag "$IMAGE" .
+          IMAGE=${{ env.REGION }}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}:${GITHUB_SHA}
+          gcloud builds submit --tag "$IMAGE"
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
 
       - name: Deploy to Cloud Run
@@ -39,5 +38,9 @@ jobs:
             --region $REGION \
             --platform managed \
             --allow-unauthenticated \
-            --set-env-vars API_KEY_SECRET=${{ secrets.API_KEY_SECRET }},API_KEY=${{ secrets.API_KEY }},CLIENT_ID=${{ secrets.CLIENT_ID }},RATE_LIMIT_PER_MIN=${{ secrets.RATE_LIMIT_PER_MIN || '60' }},MAX_TEXT_LEN=${{ secrets.MAX_TEXT_LEN || '64' }}
-
+            --set-env-vars \
+              API_KEY_SECRET=${{ secrets.API_KEY_SECRET }},\
+              API_KEY=${{ secrets.API_KEY }},\
+              CLIENT_ID=${{ secrets.CLIENT_ID }},\
+              RATE_LIMIT_PER_MIN=${{ secrets.RATE_LIMIT_PER_MIN }},\
+              MAX_TEXT_LEN=${{ secrets.MAX_TEXT_LEN }}
