@@ -38,7 +38,7 @@ jobs:
       # 🐳 Build Docker Image
       - name: Build Docker Image
         run: |
-          IMAGE=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/prooftamil-runner:${GITHUB_SHA}
+          IMAGE=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/ProofTamilRunner:${GITHUB_SHA}
           echo "Building image: $IMAGE"
           docker build -t $IMAGE .
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
