@@ -3,13 +3,12 @@ name: Deploy to Cloud Run
 on:
   push:
     branches: ["main"]
-
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   REGION: ${{ secrets.GCP_REGION }}
-  SERVICE: ${{ secrets.GCP_SERVICE }}   # prooftamil-runner
-  REPO: cloud-run-repo
-
+  SERVICE: ${{ secrets.GCP_SERVICE }}
+  REPO: docker-repo   # ✅ existing repo
+  
 jobs:
   deploy:
     runs-on: ubuntu-latest
