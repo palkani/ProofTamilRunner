@@ -7,7 +7,7 @@ on:
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   REGION: ${{ secrets.GCP_REGION }}
-  SERVICE: ${{ secrets.GCP_SERVICE }}
+  SERVICE: ${{ secrets.GCP_SERVICE }}   # e.g. prooftamil-runner
   REPO: cloud-run-repo
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # 🔐 Authenticate (same as ProofTamil)
+      # 🔐 Authenticate to Google Cloud
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
@@ -35,7 +35,25 @@ jobs:
         run: |
           gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
 
-      # 🐳 Build Docker image (LOCAL build – ProofTamil style)
+      # 🐳 Build Docker Image
       - name: Build Docker Image
         run: |
-          IMAGE=${REGION}-docker.
+          IMAGE=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/prooftamil-runner:${GITHUB_SHA}
+          echo "Building image: $IMAGE"
+          docker build -t $IMAGE .
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      # 📦 Push Docker Image
+      - name: Push Docker Image
+        run: |
+          docker push $IMAGE
+
+      # 🚀 DEPLOY TO CLOUD RUN (THIS WAS MISSING)
+      - name: Deploy to Cloud Run
+        run: |
+          echo "Deploying service: prooftamil-runner"
+          gcloud run deploy prooftamil-runner \
+            --image ${IMAGE} \
+            --region ${REGION} \
+            --platform managed \
+            --allow-unauthenticated
