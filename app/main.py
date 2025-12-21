@@ -7,7 +7,6 @@ from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.metrics import MetricsMiddleware
 from app.middleware.auth import AuthMiddleware
 
-
 def create_app() -> FastAPI:
     configure_logging()
     app = FastAPI(title="ProofTamilRunner IME", version="1.0.0")
@@ -19,22 +18,10 @@ def create_app() -> FastAPI:
     app.include_router(api_router)
     return app
 
-
 app = create_app()
 
-
-def run():
-    import uvicorn
-
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8080)),
-        reload=False,
-        log_level="info",
-    )
-
-
-if __name__ == "__main__":
-    run()
-
+# 🔍 Startup log (very important for Cloud Run debugging)
+@app.on_event("startup")
+async def startup_event():
+    port = os.environ.get("PORT", "8080")
+    print(f"🚀 ProofTamilRunner starting on port {port}")
