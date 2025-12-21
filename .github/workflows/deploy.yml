@@ -7,7 +7,7 @@ on:
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   REGION: ${{ secrets.GCP_REGION }}
-  SERVICE: ${{ secrets.GCP_SERVICE }}   # e.g. prooftamil-runner
+  SERVICE: ${{ secrets.GCP_SERVICE }}   # prooftamil-runner
   REPO: cloud-run-repo
 
 jobs:
@@ -38,7 +38,7 @@ jobs:
       # 🐳 Build Docker Image
       - name: Build Docker Image
         run: |
-          IMAGE=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/prooftamilrunner:${GITHUB_SHA}
+          IMAGE=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}:${GITHUB_SHA}
           echo "Building image: $IMAGE"
           docker build -t $IMAGE .
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
@@ -48,11 +48,11 @@ jobs:
         run: |
           docker push $IMAGE
 
-      # 🚀 DEPLOY TO CLOUD RUN (THIS WAS MISSING)
+      # 🚀 Deploy to Cloud Run
       - name: Deploy to Cloud Run
         run: |
-          echo "Deploying service: prooftamil-runner"
-          gcloud run deploy prooftamil-runner \
+          echo "Deploying service: ${SERVICE}"
+          gcloud run deploy ${SERVICE} \
             --image ${IMAGE} \
             --region ${REGION} \
             --platform managed \
