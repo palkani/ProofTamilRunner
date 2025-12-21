@@ -47,7 +47,7 @@ pip install -r requirements.txt
 export API_KEY_SECRET=change-me
 export API_KEY=demo-key
 export CLIENT_ID=demo-client
-uvicorn app.main:app --host 0.0.0.0 --port 8088
+uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
 ## Authenticated curl example

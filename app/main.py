@@ -29,7 +29,7 @@ def run():
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8088)),
+        port=int(os.environ.get("PORT", 8080)),
         reload=False,
         log_level="info",
     )
