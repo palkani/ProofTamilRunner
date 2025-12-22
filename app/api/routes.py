@@ -9,7 +9,14 @@ service = TransliterationService()
 
 @router.get("/health")
 async def health():
-    return {"ok": True}
+    from app.services.transliteration import TransliterationService
+    svc = TransliterationService()
+    ok = {
+        "ok": True,
+        "cache_init": svc.cache is not None,
+        "runner_configured": bool(svc.client) or (svc.adapter is not None),
+    }
+    return ok
 
 
 @router.post("/transliterate", response_model=TransliterateResponse)

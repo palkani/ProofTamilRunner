@@ -12,9 +12,13 @@ def hash_key(raw: str) -> str:
 
 
 class Settings:
-    PORT: int = int(os.environ.get("PORT", 8088))
+    PORT: int = int(os.environ.get("PORT", 8080))
     MAX_TEXT_LEN: int = int(os.environ.get("MAX_TEXT_LEN", 64))
     RATE_LIMIT_PER_MIN: int = int(os.environ.get("RATE_LIMIT_PER_MIN", 60))
+    TRANSLITERATOR_BASE_URL: str = os.environ.get("TRANSLITERATOR_BASE_URL", "")
+    TRANSLITERATOR_TIMEOUT_SECONDS: int = int(os.environ.get("TRANSLITERATOR_TIMEOUT_SECONDS", 5))
+    CACHE_TTL_SECONDS: int = int(os.environ.get("CACHE_TTL_SECONDS", 600))
+    CACHE_MAX_SIZE: int = int(os.environ.get("CACHE_MAX_SIZE", 5000))
     # Simple in-memory client registry: client_id -> hashed_key
     CLIENT_REGISTRY = {
         os.environ.get("CLIENT_ID", "demo-client"): hash_key(os.environ.get("API_KEY", "demo-key"))
@@ -22,4 +26,3 @@ class Settings:
 
 
 settings = Settings()
-
