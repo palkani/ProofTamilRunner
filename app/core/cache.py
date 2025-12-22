@@ -49,6 +49,14 @@ class LRUCache:
             self.cache_hits = 0
             self.cache_misses = 0
 
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                "size": len(self._store),
+                "hits": self.cache_hits,
+                "misses": self.cache_misses,
+            }
+
 
 def make_cache_key(*parts: str) -> str:
     raw = "||".join(parts)

@@ -19,6 +19,7 @@ class Settings:
     TRANSLITERATOR_TIMEOUT_SECONDS: int = int(os.environ.get("TRANSLITERATOR_TIMEOUT_SECONDS", 5))
     CACHE_TTL_SECONDS: int = int(os.environ.get("CACHE_TTL_SECONDS", 600))
     CACHE_MAX_SIZE: int = int(os.environ.get("CACHE_MAX_SIZE", 5000))
+    TRANSLITERATOR_ENABLED: bool = bool(TRANSLITERATOR_BASE_URL.strip())
     # Simple in-memory client registry: client_id -> hashed_key
     CLIENT_REGISTRY = {
         os.environ.get("CLIENT_ID", "demo-client"): hash_key(os.environ.get("API_KEY", "demo-key"))
