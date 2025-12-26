@@ -23,7 +23,8 @@ def create_app() -> FastAPI:
         bool(settings.TRANSLITERATOR_BASE_URL),
     )
 
-    app.include_router(api_router)
+    # Mount API under /api/v1 to match caller expectations
+    app.include_router(api_router, prefix="/api/v1")
     return app
 
 
