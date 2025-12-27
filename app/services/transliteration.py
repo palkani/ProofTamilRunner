@@ -15,6 +15,18 @@ DEBUG = False
 tamil_regex = re.compile(r"^[\u0B80-\u0BFF\s]+$")
 
 
+TAMIL_VOWELS = set('அஆஇஈஉஊஎஏஐஒஓஔ')
+TAMIL_VOWEL_SIGNS = set('ாிீுூெேைொோௌ')
+
+def ends_with_tamil_vowel(word: str) -> bool:
+    if not word:
+        return False
+    ch = word[-1]
+    if ch in TAMIL_VOWELS or ch in TAMIL_VOWEL_SIGNS:
+        return True
+    return False
+
+
 def _latin_variants(text: str, max_variants: int = 64) -> List[str]:
     text = (text or "").strip().lower()
     if not text:
@@ -41,6 +53,9 @@ def _latin_variants(text: str, max_variants: int = 64) -> List[str]:
 def _tamil_suffix_expansion(word: str) -> List[str]:
     if not word:
         return []
+    # Do not append vowel signs if the word already ends with a vowel or vowel sign
+    if ends_with_tamil_vowel(word):
+        return [word]
     forms = {word}
     suffixes = ["ி", "ை", "ு", "ா"]
     for suf in suffixes:
@@ -49,6 +64,7 @@ def _tamil_suffix_expansion(word: str) -> List[str]:
         forms.add(word[:-1] + "ட்ட")
         forms.add(word[:-1] + "ட்டை")
     return list(forms)
+
 
 
 def _normalize(s: str) -> str:
@@ -203,7 +219,15 @@ class TransliterationService:
             if word not in cleaned or score > cleaned[word]["score"]:
                 cleaned[word] = {"word": word, "score": score}
 
-        final = sorted(cleaned.values(), key=lambda x: x["score"], reverse=True)
+        # Filter to Tamil words only and normalize
+        filtered = []
+        for s in cleaned.values():
+            w = s.get("word")
+            if not w or not tamil_regex.match(w):
+                continue
+            filtered.append({"word": w, "score": s.get("score", 0)})
+
+        final = sorted(filtered, key=lambda x: x["score"], reverse=True)
         final = final[: max(8, min(limit or 8, 10))]
 
         assert all("word" in s and "score" in s for s in final)
