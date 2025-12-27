@@ -190,16 +190,26 @@ class TransliterationService:
         ime_suggestions = await self.generate_ime_suggestions(text, limit)
         suggestions = suggestions + ime_suggestions if suggestions else ime_suggestions
 
-        # Dedup and cap
-        dedup = {}
+        # Dedup, normalize, and cap
+        cleaned = {}
         for item in suggestions:
-            k = item.get("word")
-            if not k:
+            word = item.get("word") if isinstance(item, dict) else None
+            if not word:
                 continue
-            if k not in dedup or item.get("score", 0) > dedup[k].get("score", 0):
-                dedup[k] = item
-        final = sorted(dedup.values(), key=lambda x: x.get("score", 0), reverse=True)
+            try:
+                score = round(float(item.get("score", 0)), 2)
+            except Exception:
+                continue
+            if word not in cleaned or score > cleaned[word]["score"]:
+                cleaned[word] = {"word": word, "score": score}
+
+        final = sorted(cleaned.values(), key=lambda x: x["score"], reverse=True)
         final = final[: max(8, min(limit or 8, 10))]
+
+        assert all("word" in s and "score" in s for s in final)
+
+        if DEBUG:
+            logging.info("[IME] final suggestions=%s", final)
 
         if final:
             self.response_cache.set(key, final)
