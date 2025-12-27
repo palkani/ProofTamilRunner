@@ -8,6 +8,14 @@ router = APIRouter()
 service = TransliterationService()
 
 
+def _no_cache_headers(resp: Response):
+    if resp is None:
+        return
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+
+
 @router.get("/health")
 async def health():
     cache_stats = service.cache.stats() if service.cache else {"size": 0, "hits": 0, "misses": 0}
@@ -28,6 +36,7 @@ async def transliterate(req: TransliterateRequest, request: Request, response: R
     suggestions, used_runner, cache_status = await service.transliterate(req.text, req.mode, req.limit, rid)
     response.headers["X-Transliterator-Used"] = "true" if used_runner else "false"
     response.headers["X-Transliterator-Cache"] = cache_status
+    _no_cache_headers(response)
     return TransliterateResponse(success=True, suggestions=suggestions)
 
 
@@ -38,4 +47,5 @@ async def transliterate_suggest(q: str, limit: int = 8, mode: str = "spoken", re
     if response is not None:
         response.headers["X-Transliterator-Used"] = "true" if used_runner else "false"
         response.headers["X-Transliterator-Cache"] = cache_status
+        _no_cache_headers(response)
     return TransliterateResponse(success=True, suggestions=suggestions)

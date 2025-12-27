@@ -9,8 +9,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code and data
 COPY app ./app
+COPY data ./data
 
 # Cloud Run listens on 8080
 EXPOSE 8080

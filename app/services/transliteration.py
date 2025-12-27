@@ -1,35 +1,36 @@
 import logging
 import re
 import time
+import math
 from typing import List, Tuple, Set
 
 from app.adapters.aksharamukha import AksharaAdapter
 from app.clients.transliterator_client import build_client
 from app.core.cache import LRUCache, make_cache_key
 from app.core.config import settings
+from app.core.freq_dict import freq_score, has_freq
+
+DEBUG = False
 
 tamil_regex = re.compile(r"^[\u0B80-\u0BFF\s]+$")
 
 
-def _latin_variants(text: str, max_variants: int = 32) -> List[str]:
+def _latin_variants(text: str, max_variants: int = 64) -> List[str]:
     text = (text or "").strip().lower()
     if not text:
         return []
     variants: Set[str] = set()
     variants.add(text)
 
-    # Vowel lengthening
     vowel_map = {"a": "aa", "i": "ii", "u": "uu", "e": "ee", "o": "oo"}
     for i, ch in enumerate(text):
         if ch in vowel_map:
             variants.add(text[: i + 1] + vowel_map[ch] + text[i + 1 :])
 
-    # Consonant tweaks
     variants.add(text.replace("t", "tt"))
     variants.add(text.replace("th", "t"))
     variants.add(text.replace("d", "t"))
 
-    # Common Tamil-ish endings
     endings = ["i", "ai", "a", "u", "oo", "ta", "tai", "tta", "ttai", "di", "ti"]
     for end in endings:
         variants.add(text + end)
@@ -50,14 +51,64 @@ def _tamil_suffix_expansion(word: str) -> List[str]:
     return list(forms)
 
 
-def _score(tier: str) -> float:
-    if tier == "base":
+def _normalize(s: str) -> str:
+    return (s or "").lower()
+
+
+def _levenshtein(a: str, b: str) -> int:
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i]
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            curr.append(min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost))
+        prev = curr
+    return prev[-1]
+
+
+def _phonetic_score(src: str, tgt: str) -> float:
+    a = _normalize(src)
+    b = _normalize(tgt)
+    if not a or not b:
+        return 0.5
+    dist = _levenshtein(a, b)
+    max_len = max(len(a), len(b)) or 1
+    sim = 1 - dist / max_len
+    return max(0.0, min(1.0, sim))
+
+
+def _length_score(word: str) -> float:
+    l = len(word)
+    if l <= 1:
+        return 0.3
+    if 2 <= l <= 6:
         return 1.0
-    if tier == "variant":
-        return 0.9
-    if tier == "suffix":
-        return 0.75
-    return 0.6
+    if l <= 10:
+        return 0.7
+    return 0.5
+
+
+def _form_score(word: str) -> float:
+    if not word:
+        return 0.5
+    if word.endswith("்") and not has_freq(word):
+        return 0.6
+    return 1.0
+
+
+def _score_candidate(word: str, src_variant: str, tier: str) -> float:
+    freq = freq_score(word)
+    phon = _phonetic_score(src_variant, word)
+    form = _form_score(word)
+    length = _length_score(word)
+    final = 0.45 * freq + 0.30 * phon + 0.15 * form + 0.10 * length
+    return round(min(1.0, max(0.0, final)), 2)
 
 
 class TransliterationService:
@@ -68,16 +119,14 @@ class TransliterationService:
     def __init__(self):
         self.adapter = AksharaAdapter()
         self.cache = LRUCache(max_size=settings.CACHE_MAX_SIZE, default_ttl=settings.CACHE_TTL_SECONDS)
+        self.response_cache = LRUCache(max_size=20000, default_ttl=1800)
+        self.variant_cache = LRUCache(max_size=5000, default_ttl=900)
         self.client = build_client()
         self.runner_enabled = settings.TRANSLITERATOR_ENABLED
 
     async def transliterate(
         self, text: str, mode: str, limit: int, request_id: str = "n/a"
     ) -> Tuple[List[dict], bool, str]:
-        """
-        Transliterate text with cache and external runner if enabled.
-        Returns (suggestions, used_runner, cache_status[hit|miss|none]).
-        """
         logging.info("transliteration_pipeline_start request_id=%s", request_id)
 
         text = (text or "").strip()
@@ -87,18 +136,17 @@ class TransliterationService:
         limit = max(1, min(limit or 8, 12))
 
         key = make_cache_key(text, mode, str(limit))
-        logging.info("transliteration_cache_lookup request_id=%s", request_id)
-        cached = self.cache.get(key)
+        cached = self.response_cache.get(key)
         if cached:
-            logging.info("transliteration_cache_hit request_id=%s", request_id)
+            if DEBUG:
+                logging.info("[IME] cache hit q=%s", text)
             return cached, True, "hit"
-        logging.info("transliteration_cache_miss request_id=%s", request_id)
 
         suggestions: List[dict] = []
         used_runner = False
         cache_status = "miss"
 
-        # If external runner is enabled, call it first
+        # External runner (if enabled)
         if self.runner_enabled:
             if not self.client:
                 logging.info(
@@ -106,7 +154,8 @@ class TransliterationService:
                     request_id,
                 )
             else:
-                logging.info("calling_transliterator_runner request_id=%s", request_id)
+                if DEBUG:
+                    logging.info("calling_transliterator_runner request_id=%s", request_id)
                 start = time.perf_counter()
                 try:
                     data = await self.client.transliterate(text)
@@ -138,12 +187,8 @@ class TransliterationService:
             )
 
         # IME-style generation with Aksharamukha (fallback or supplement)
-        try:
-            ime_suggestions = await self.generate_ime_suggestions(text, limit)
-            suggestions = ime_suggestions if not suggestions else suggestions + ime_suggestions
-        except Exception as e:
-            logging.exception("[AKSHARA] request_id=%s error=%s", request_id, e)
-            return [], False, "none"
+        ime_suggestions = await self.generate_ime_suggestions(text, limit)
+        suggestions = suggestions + ime_suggestions if suggestions else ime_suggestions
 
         # Dedup and cap
         dedup = {}
@@ -154,31 +199,41 @@ class TransliterationService:
             if k not in dedup or item.get("score", 0) > dedup[k].get("score", 0):
                 dedup[k] = item
         final = sorted(dedup.values(), key=lambda x: x.get("score", 0), reverse=True)
-        final = final[: max(5, min(limit or 8, 10))]
+        final = final[: max(8, min(limit or 8, 10))]
 
         if final:
-            self.cache.set(key, final)
+            self.response_cache.set(key, final)
         return final, used_runner, cache_status
 
     async def generate_ime_suggestions(self, text: str, limit: int) -> List[dict]:
-        base_variants = _latin_variants(text, max_variants=32)
+        base_variants = _latin_variants(text, max_variants=64)
         tamil_set: Set[str] = set()
         scored: List[dict] = []
 
+        async def translit_cached(token: str) -> List[str]:
+            ck = make_cache_key("variant", token)
+            cached = self.variant_cache.get(ck)
+            if cached:
+                return cached
+            outs = await self.adapter.transliterate(token, "spoken")
+            self.variant_cache.set(ck, outs)
+            return outs
+
         # Base transliteration of the original token
-        base_outs = await self.adapter.transliterate(text, "spoken")
-        for out in base_outs:
+        for out in await translit_cached(text):
             if out and tamil_regex.match(out) and out not in tamil_set:
                 tamil_set.add(out)
-                scored.append({"word": out, "score": _score("base")})
+                scored.append({"word": out, "score": _score_candidate(out, text, "base")})
 
         # Variant transliterations
         for variant in base_variants:
-            outs = await self.adapter.transliterate(variant, "spoken")
+            outs = await translit_cached(variant)
             for out in outs:
                 if out and tamil_regex.match(out) and out not in tamil_set:
                     tamil_set.add(out)
-                    scored.append({"word": out, "score": _score("variant")})
+                    scored.append({"word": out, "score": _score_candidate(out, variant, "variant")})
+            if len(tamil_set) > 80:
+                break
 
         # Tamil suffix expansion
         expanded: List[str] = []
@@ -187,22 +242,22 @@ class TransliterationService:
         for exp in expanded:
             if exp and tamil_regex.match(exp) and exp not in tamil_set:
                 tamil_set.add(exp)
-                scored.append({"word": exp, "score": _score("suffix")})
+                scored.append({"word": exp, "score": _score_candidate(exp, text, "suffix")})
 
-        # Dedup, sort, trim
         dedup = {}
         for item in scored:
             key = item["word"]
             if key not in dedup or item["score"] > dedup[key]["score"]:
                 dedup[key] = item
         suggestions = sorted(dedup.values(), key=lambda x: x["score"], reverse=True)
-        suggestions = suggestions[: max(5, min(limit or 8, 10))]
+        suggestions = suggestions[: max(8, min(limit or 8, 10))]
 
-        logging.info(
-            "[IME] base=%s variants=%d suggestions=%d",
-            text,
-            len(base_variants),
-            len(suggestions),
-        )
+        if DEBUG:
+            logging.info(
+                "[IME] base=%s variants=%d suggestions=%d",
+                text,
+                len(base_variants),
+                len(suggestions),
+            )
 
         return suggestions
