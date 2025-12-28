@@ -69,9 +69,37 @@ async def transliterate_suggest(
         if metadata and "latency_ms" in metadata:
             response.headers["X-Latency-Ms"] = str(int(metadata["latency_ms"]))
         
-        return TransliterateResponse(success=True, suggestions=suggestions)
+        result = TransliterateResponse(success=True, suggestions=suggestions)
+        
+        # Log response with first 5 suggestions (word and score)
+        suggestion_preview = []
+        for s in suggestions[:5]:
+            if isinstance(s, dict):
+                word = s.get("word", "")
+                score = s.get("score", 0.0)
+                suggestion_preview.append(f"{word}({score:.2f})")
+            else:
+                suggestion_preview.append(str(s)[:20])
+        
+        logging.info(
+            "suggest_api_response request_id=%s q=%s success=%s count=%d suggestions=%s metadata=%s",
+            rid,
+            q,
+            result.success,
+            len(suggestions),
+            suggestion_preview,
+            metadata,
+        )
+        
+        return result
     except Exception as e:
-        logging.error(f"suggest_api_error request_id={rid} error={str(e)}", exc_info=True)
+        logging.error(f"suggest_api_error request_id={rid} q={q} error={str(e)}", exc_info=True)
         _no_cache_headers(response)
         # Return empty suggestions on error rather than crashing
-        return TransliterateResponse(success=False, suggestions=[])
+        error_result = TransliterateResponse(success=False, suggestions=[])
+        logging.info(
+            "suggest_api_response request_id=%s q=%s success=False count=0",
+            rid,
+            q,
+        )
+        return error_result
