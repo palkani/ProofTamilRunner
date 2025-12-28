@@ -46,32 +46,94 @@ async def transliterate_suggest(
     q: str,
     request: Request,
     response: Response,
-    limit: int = 5,
-    mode: str = "spoken",
-    prev: Optional[str] = None,
+    limit: int = 8,
+    mode: str = "smart",
+    context: Optional[str] = None,
+    cursor: Optional[int] = None,
+    prev: Optional[str] = None,  # Backwards compatibility
 ):
     """
-    Production-grade suggest API implementing 12-step pipeline.
+    Enhanced suggest API with layered algorithm for context-aware Tamil suggestions.
     
-    Returns Tamil transliteration suggestions with strict linguistic validation.
+    Returns Tamil transliteration suggestions with multiple layers:
+    - Layer A: Core Transliteration (strict)
+    - Layer B: Tamil Vowel Expansion
+    - Layer C: Context-Aware Completion
+    - Layer D: Frequency Ranking
+    - Layer E: Heuristic Neighbors (smart mode only)
+    - Layer F: Dedup + Final Ranker
+    
+    Parameters:
+    - q: Roman input fragment (1-40 characters)
+    - limit: Maximum suggestions (1-20, default: 8)
+    - mode: "smart" (default) or "strict"
+    - context: Full text around cursor for context-aware suggestions (optional)
+    - cursor: Cursor position within context (optional)
+    - prev: Previous context (backwards compatibility, maps to context)
     """
+    from fastapi import HTTPException
+    from app.suggestion_engine.engine import SuggestionEngine
+    from app.suggestion_engine.types import SuggestionRequest
+    
     rid = getattr(request.state, "request_id", "n/a")
     
+    # Validate inputs
+    if not q or len(q) < 1 or len(q) > 40:
+        raise HTTPException(status_code=400, detail="q must be between 1 and 40 characters")
+    if limit < 1 or limit > 20:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 20")
+    if mode not in ("smart", "strict"):
+        raise HTTPException(status_code=400, detail="mode must be 'smart' or 'strict'")
+    
+    # Map old "spoken" mode to "smart" for backwards compatibility
+    if mode == "spoken":
+        mode = "smart"
+    
+    # Use prev as context if context not provided (backwards compatibility)
+    if context is None and prev:
+        context = prev
+        cursor = len(prev) if prev else None
+    
     try:
-        # Lazy import to avoid startup failures
-        from app.services.suggest_service import get_suggest_service
-        suggest_service = get_suggest_service()
-        suggestions, metadata = await suggest_service.suggest(q, limit, mode, prev, rid)
+        # Initialize engine (singleton pattern - could be cached)
+        engine = SuggestionEngine()
         
+        # Build request
+        suggest_request = SuggestionRequest(
+            q=q,
+            limit=limit,
+            mode=mode,
+            context=context,
+            cursor=cursor,
+            client_id=getattr(request.state, "client_id", None),
+        )
+        
+        # Generate suggestions
+        result = await engine.suggest(suggest_request, rid)
+        
+        if not result.success:
+            if result.error:
+                raise HTTPException(status_code=400, detail=result.error.get("message", "Invalid request"))
+            raise HTTPException(status_code=500, detail="Internal error")
+        
+        # Set response headers
         _no_cache_headers(response)
-        if metadata and "cache" in metadata:
-            response.headers["X-Cache"] = metadata["cache"]
-        if metadata and "latency_ms" in metadata:
-            response.headers["X-Latency-Ms"] = str(int(metadata["latency_ms"]))
+        if result.meta:
+            if "algorithm_version" in result.meta:
+                response.headers["X-Algorithm-Version"] = result.meta["algorithm_version"]
+            if "layers_used" in result.meta:
+                response.headers["X-Layers-Used"] = ",".join(result.meta["layers_used"])
+            if "cache_hits" in result.meta:
+                cache_hits = result.meta["cache_hits"]
+                response.headers["X-Cache-Hit-Core"] = str(cache_hits.get("core", False)).lower()
+                response.headers["X-Cache-Hit-Final"] = str(cache_hits.get("final", False)).lower()
+            if "total_time_ms" in result.meta:
+                response.headers["X-Latency-Ms"] = str(int(result.meta["total_time_ms"]))
         
-        result = TransliterateResponse(success=True, suggestions=suggestions)
+        # Convert to response format (backwards compatible)
+        suggestions = result.suggestions
         
-        # Log response with first 5 suggestions (word and score)
+        # Log response
         suggestion_preview = []
         for s in suggestions[:5]:
             if isinstance(s, dict):
@@ -82,16 +144,20 @@ async def transliterate_suggest(
                 suggestion_preview.append(str(s)[:20])
         
         logging.info(
-            "suggest_api_response request_id=%s q=%s success=%s count=%d suggestions=%s metadata=%s",
+            "suggest_api_response request_id=%s q=%s mode=%s success=%s count=%d suggestions=%s meta=%s",
             rid,
             q,
+            mode,
             result.success,
             len(suggestions),
             suggestion_preview,
-            metadata,
+            result.meta,
         )
         
-        return result
+        return TransliterateResponse(success=True, suggestions=suggestions)
+        
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"suggest_api_error request_id={rid} q={q} error={str(e)}", exc_info=True)
         _no_cache_headers(response)
