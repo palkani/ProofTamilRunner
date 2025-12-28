@@ -44,18 +44,18 @@ async def transliterate(req: TransliterateRequest, request: Request, response: R
 @router.get("/transliterate/suggest", response_model=TransliterateResponse)
 async def transliterate_suggest(
     q: str,
+    request: Request,
+    response: Response,
     limit: int = 5,
     mode: str = "spoken",
     prev: Optional[str] = None,
-    request: Optional[Request] = None,
-    response: Optional[Response] = None,
 ):
     """
     Production-grade suggest API implementing 12-step pipeline.
     
     Returns Tamil transliteration suggestions with strict linguistic validation.
     """
-    rid = getattr(getattr(request, "state", None), "request_id", "n/a") if request else "n/a"
+    rid = getattr(request.state, "request_id", "n/a")
     
     try:
         # Lazy import to avoid startup failures
@@ -63,17 +63,15 @@ async def transliterate_suggest(
         suggest_service = get_suggest_service()
         suggestions, metadata = await suggest_service.suggest(q, limit, mode, prev, rid)
         
-        if response is not None:
-            _no_cache_headers(response)
-            if metadata and "cache" in metadata:
-                response.headers["X-Cache"] = metadata["cache"]
-            if metadata and "latency_ms" in metadata:
-                response.headers["X-Latency-Ms"] = str(int(metadata["latency_ms"]))
+        _no_cache_headers(response)
+        if metadata and "cache" in metadata:
+            response.headers["X-Cache"] = metadata["cache"]
+        if metadata and "latency_ms" in metadata:
+            response.headers["X-Latency-Ms"] = str(int(metadata["latency_ms"]))
         
         return TransliterateResponse(success=True, suggestions=suggestions)
     except Exception as e:
         logging.error(f"suggest_api_error request_id={rid} error={str(e)}", exc_info=True)
-        if response is not None:
-            _no_cache_headers(response)
+        _no_cache_headers(response)
         # Return empty suggestions on error rather than crashing
         return TransliterateResponse(success=False, suggestions=[])
