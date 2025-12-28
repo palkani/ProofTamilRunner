@@ -3,7 +3,6 @@ from typing import Optional
 from fastapi import APIRouter, Request, Response
 from app.api.schemas import TransliterateRequest, TransliterateResponse
 from app.services.transliteration import TransliterationService
-from app.services.suggest_service import get_suggest_service
 from app.core.config import settings
 
 router = APIRouter()
@@ -58,15 +57,23 @@ async def transliterate_suggest(
     """
     rid = getattr(getattr(request, "state", None), "request_id", "n/a") if request else "n/a"
     
-    # Use new suggest service with full pipeline (lazy initialization)
-    suggest_service = get_suggest_service()
-    suggestions, metadata = await suggest_service.suggest(q, limit, mode, prev, rid)
-    
-    if response is not None:
-        _no_cache_headers(response)
-        if "cache" in metadata:
-            response.headers["X-Cache"] = metadata["cache"]
-        if "latency_ms" in metadata:
-            response.headers["X-Latency-Ms"] = str(int(metadata["latency_ms"]))
-    
-    return TransliterateResponse(success=True, suggestions=suggestions)
+    try:
+        # Lazy import to avoid startup failures
+        from app.services.suggest_service import get_suggest_service
+        suggest_service = get_suggest_service()
+        suggestions, metadata = await suggest_service.suggest(q, limit, mode, prev, rid)
+        
+        if response is not None:
+            _no_cache_headers(response)
+            if metadata and "cache" in metadata:
+                response.headers["X-Cache"] = metadata["cache"]
+            if metadata and "latency_ms" in metadata:
+                response.headers["X-Latency-Ms"] = str(int(metadata["latency_ms"]))
+        
+        return TransliterateResponse(success=True, suggestions=suggestions)
+    except Exception as e:
+        logging.error(f"suggest_api_error request_id={rid} error={str(e)}", exc_info=True)
+        if response is not None:
+            _no_cache_headers(response)
+        # Return empty suggestions on error rather than crashing
+        return TransliterateResponse(success=False, suggestions=[])
