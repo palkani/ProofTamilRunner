@@ -77,6 +77,12 @@ class SuggestService:
             "final_count": 0,
         }
 
+        # PART B: Character-level IME (mode == "char")
+        # Check mode parameter - if "char", use character-level transliteration
+        normalized_q = q.strip()
+        if mode == "char":
+            return self._suggest_char_level(normalized_q, limit, request_id)
+
         # Step 1: Roman input normalization
         normalized_input = normalize_roman_input(q)
         input_length = len(normalized_input)
@@ -253,6 +259,91 @@ class SuggestService:
             return 0.6
         else:
             return 0.4
+
+    def _suggest_char_level(
+        self, char: str, limit: int, request_id: str
+    ) -> Tuple[List[Dict[str, any]], Dict[str, any]]:
+        """
+        PART B: Character-level IME - generate Tamil letters for single Latin character.
+        
+        Examples:
+        t → ட, த, ட், த்
+        n → ந, ண, ன
+        k → க, க்
+        
+        Returns basic Tamil letters/syllables with phonetic scoring only.
+        """
+        if not char or len(char) != 1:
+            return [], {"error": "char mode requires single character"}
+        
+        char_lower = char.lower().strip()
+        if not char_lower or not char_lower.isalpha():
+            return [], {"error": "invalid character"}
+        
+        # Character to Tamil letter mappings (phonetic expansions)
+        CHAR_MAP = {
+            't': ['த', 'ட', 'த்', 'ட்'],  # ta, Da, th, Dh
+            'n': ['ந', 'ண', 'ன'],  # na, Na, nna
+            'k': ['க', 'க்'],  # ka, k
+            'p': ['ப', 'ப்'],  # pa, p
+            'm': ['ம', 'ம்'],  # ma, m
+            'r': ['ர', 'ற'],  # ra, Ra
+            'l': ['ல', 'ள', 'ழ'],  # la, La, zha
+            's': ['ச', 'ஸ', 'ஷ'],  # ca, sa, sha
+            'y': ['ய', 'ய்'],  # ya, y
+            'v': ['வ', 'வ்'],  # va, v
+            'c': ['ச', 'ச்'],  # ca, c
+            'h': ['ஹ', 'ஹ்'],  # ha, h
+            'd': ['த', 'ட'],  # tha, Da
+            'b': ['ப', 'ப்'],  # ba, b
+            'g': ['க', 'க்'],  # ga, g
+            'j': ['ஜ', 'ஜ்'],  # ja, j
+            'z': ['ஸ', 'ஸ்'],  # za, z
+            'f': ['ஃ', 'ஃப்'],  # special Tamil character
+            'x': ['ஸ்'],  # ks
+            'q': ['க்'],  # q -> k
+            'w': ['வ'],  # w -> v
+        }
+        
+        # Get Tamil letters for this character
+        candidates = CHAR_MAP.get(char_lower, [])
+        
+        # If no direct mapping, try using aksharamukha library directly for basic transliteration
+        if not candidates:
+            try:
+                from aksharamukha.transliterate import process
+                # Try basic transliteration (synchronous call)
+                transliterated = process("ISO", "Tamil", char_lower)
+                if transliterated and len(transliterated) > 0:
+                    # Extract single Tamil characters (filter out non-Tamil)
+                    tamil_chars = [c for c in transliterated if '\u0B80' <= c <= '\u0BFF' or c in ['ா', 'ி', 'ீ', 'ு', 'ூ', 'ெ', 'ே', 'ை', 'ொ', 'ோ', 'ௌ', '்']]
+                    if tamil_chars:
+                        candidates = list(set(tamil_chars[:8]))  # Limit to 8 unique chars
+            except Exception as e:
+                logger.warning(f"char_mode_aksharamukha_failed char={char_lower} error={str(e)}")
+        
+        if not candidates:
+            return [], {"error": "no candidates found"}
+        
+        # Score by phonetic closeness (simple - all get similar score for char mode)
+        scored = []
+        for i, cand in enumerate(candidates[:limit * 2]):  # Get more candidates initially
+            # First candidate gets highest score, rest slightly lower
+            score = 1.0 - (i * 0.1)
+            scored.append({"word": cand, "score": max(0.1, score)})
+        
+        # Sort by score (descending) and limit
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        final = scored[:min(limit, 8)]
+        
+        metadata = {
+            "mode": "char",
+            "char": char_lower,
+            "final_count": len(final),
+        }
+        
+        logger.info(f"char_mode_suggest request_id={request_id} char={char_lower} count={len(final)}")
+        return final, metadata
 
     def _rank_candidate(
         self, candidate: str, input_text: str, prev: Optional[str] = None, input_length: int = 0
