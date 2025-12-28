@@ -85,8 +85,9 @@ async def transliterate_suggest(
     rid = getattr(request.state, "request_id", "n/a")
     request_start = time.perf_counter()
     
-    # Metrics: increment request counter
-    _suggest_requests_total[mode] = _suggest_requests_total.get(mode, 0) + 1
+    # Map old "spoken" mode to "smart" for backwards compatibility (BEFORE validation)
+    if mode == "spoken":
+        mode = "smart"
     
     # Validate inputs
     if not q or len(q) < 1 or len(q) > 40:
@@ -96,9 +97,8 @@ async def transliterate_suggest(
     if mode not in ("smart", "strict"):
         raise HTTPException(status_code=400, detail="mode must be 'smart' or 'strict'")
     
-    # Map old "spoken" mode to "smart" for backwards compatibility
-    if mode == "spoken":
-        mode = "smart"
+    # Metrics: increment request counter (after mode mapping)
+    _suggest_requests_total[mode] = _suggest_requests_total.get(mode, 0) + 1
     
     # Use prev as context if context not provided (backwards compatibility)
     if context is None and prev:
