@@ -1,11 +1,14 @@
 import logging
+from typing import Optional
 from fastapi import APIRouter, Request, Response
 from app.api.schemas import TransliterateRequest, TransliterateResponse
 from app.services.transliteration import TransliterationService
+from app.services.suggest_service import get_suggest_service
 from app.core.config import settings
 
 router = APIRouter()
 service = TransliterationService()
+suggest_service = get_suggest_service()
 
 
 def _no_cache_headers(resp: Response):
@@ -41,11 +44,29 @@ async def transliterate(req: TransliterateRequest, request: Request, response: R
 
 
 @router.get("/transliterate/suggest", response_model=TransliterateResponse)
-async def transliterate_suggest(q: str, limit: int = 8, mode: str = "spoken", request: Request = None, response: Response = None):
+async def transliterate_suggest(
+    q: str,
+    limit: int = 5,
+    mode: str = "spoken",
+    prev: Optional[str] = None,
+    request: Optional[Request] = None,
+    response: Optional[Response] = None,
+):
+    """
+    Production-grade suggest API implementing 12-step pipeline.
+    
+    Returns Tamil transliteration suggestions with strict linguistic validation.
+    """
     rid = getattr(getattr(request, "state", None), "request_id", "n/a") if request else "n/a"
-    suggestions, used_runner, cache_status = await service.transliterate(q, mode, limit, rid)
+    
+    # Use new suggest service with full pipeline
+    suggestions, metadata = await suggest_service.suggest(q, limit, mode, prev, rid)
+    
     if response is not None:
-        response.headers["X-Transliterator-Used"] = "true" if used_runner else "false"
-        response.headers["X-Transliterator-Cache"] = cache_status
         _no_cache_headers(response)
+        if "cache" in metadata:
+            response.headers["X-Cache"] = metadata["cache"]
+        if "latency_ms" in metadata:
+            response.headers["X-Latency-Ms"] = str(int(metadata["latency_ms"]))
+    
     return TransliterateResponse(success=True, suggestions=suggestions)
