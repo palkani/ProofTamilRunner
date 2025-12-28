@@ -57,13 +57,13 @@ class ContextJoinLayer:
                     context_boost = 0.02
             else:
                 # Inside word: check if can join
-            if last_char_class:
-                # Check if candidate can join with last Tamil char
-                if self._can_join(left_context, word, last_char_class):
-                    context_boost = 0.05
-                else:
-                    # Small penalty for candidates that can't join (but don't exclude)
-                    context_boost = -0.01
+                if last_char_class:
+                    # Check if candidate can join with last Tamil char
+                    if self._can_join(left_context, word, last_char_class):
+                        context_boost = 0.05
+                    else:
+                        # Small penalty for candidates that can't join (but don't exclude)
+                        context_boost = -0.01
 
             # Clamp final score
             new_score = max(0.0, min(1.0, base_score + context_boost))
