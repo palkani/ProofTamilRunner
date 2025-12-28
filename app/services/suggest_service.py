@@ -15,8 +15,8 @@ from app.core.freq_dict import freq_score, has_freq
 from app.services.tamil_linguistics import (
     normalize_roman_input,
     normalize_unicode,
-    validate_tamil_orthography,
-    eliminate_morphological_garbage,
+    is_structurally_invalid_tamil,
+    morphology_score,
 )
 from app.services.canonical_map import get_canonical
 
@@ -73,8 +73,7 @@ class SuggestService:
         metadata = {
             "cache": "miss",
             "raw_candidate_count": 0,
-            "after_rules_count": 0,
-            "after_lexicon_count": 0,
+            "after_structural_filter": 0,
             "final_count": 0,
         }
 
@@ -145,56 +144,36 @@ class SuggestService:
             if normalized:
                 normalized_candidates.append(normalized)
 
-        # Step 5: Tamil orthography validation
-        orthography_valid = []
+        # PART B: Minimal hard filter - only structurally invalid Tamil
+        structurally_valid = []
         for cand in normalized_candidates:
-            if validate_tamil_orthography(cand):
-                orthography_valid.append(cand)
+            if not is_structurally_invalid_tamil(cand):
+                structurally_valid.append(cand)
 
-        metadata["after_rules_count"] = len(orthography_valid)
+        metadata["after_structural_filter"] = len(structurally_valid)
 
-        # Step 6: Morphological garbage elimination
-        morphologically_valid = []
-        for cand in orthography_valid:
-            if eliminate_morphological_garbage(cand, input_length):
-                morphologically_valid.append(cand)
-
-        # Step 7: Lexicon + frequency gating
-        lexicon_gated = []
-        for cand in morphologically_valid:
-            # If input length >= 3, candidate MUST exist in lexicon OR be canonical
-            if input_length >= 3:
-                if has_freq(cand):
-                    lexicon_gated.append(cand)
-                # Also allow very short valid syllables (2 chars or less) even if not in lexicon
-                elif len(cand) <= 2:
-                    lexicon_gated.append(cand)
-            else:
-                # For short inputs (<=2), allow syllables even if not in lexicon (but still must be valid)
-                lexicon_gated.append(cand)
-
-        metadata["after_lexicon_count"] = len(lexicon_gated)
-
-        # If no valid candidates after all filters, return empty
-        if not lexicon_gated:
+        # If no structurally valid candidates, return empty
+        if not structurally_valid:
             logger.warning(
-                "suggest_no_valid_candidates request_id=%s q=%s", request_id, q
+                "suggest_no_structurally_valid request_id=%s q=%s", request_id, q
             )
             latency_ms = (time.perf_counter() - start_time) * 1000
             metadata["latency_ms"] = latency_ms
             return [], metadata
 
-        # Step 8: Context-aware ranking
+        # PART C: Soft scoring (no hard filtering beyond structural validity)
         scored_candidates = []
-        for cand in lexicon_gated:
-            score = self._rank_candidate(cand, normalized_input, prev)
+        for cand in structurally_valid:
+            score = self._rank_candidate(cand, normalized_input, prev, input_length)
             scored_candidates.append({"word": cand, "score": score})
 
         # Sort by score (descending)
         scored_candidates.sort(key=lambda x: x["score"], reverse=True)
 
-        # Step 9: Deterministic cutoff
-        final = scored_candidates[:limit]
+        # Step 9: Return top N (respect limit, but ensure we return meaningful results)
+        # If limit is less than 8, use 8 to ensure good UX (related words remain visible)
+        final_limit = max(limit, 8)
+        final = scored_candidates[:final_limit]
 
         metadata["final_count"] = len(final)
         latency_ms = (time.perf_counter() - start_time) * 1000
@@ -202,12 +181,11 @@ class SuggestService:
 
         # Step 11: Observability (structured logging)
         logger.info(
-            "suggest_complete request_id=%s q=%s raw=%d rules=%d lexicon=%d final=%d latency_ms=%.2f",
+            "suggest_complete request_id=%s q=%s raw=%d structural=%d final=%d latency_ms=%.2f",
             request_id,
             q,
             metadata["raw_candidate_count"],
-            metadata["after_rules_count"],
-            metadata["after_lexicon_count"],
+            metadata.get("after_structural_filter", 0),
             metadata["final_count"],
             latency_ms,
         )
@@ -218,43 +196,94 @@ class SuggestService:
 
         return final, metadata
 
+    def _phonetic_score(self, input_text: str, candidate: str) -> float:
+        """
+        PART C: Phonetic similarity score (0.0-1.0).
+        Simple edit distance-based similarity.
+        """
+        if not input_text or not candidate:
+            return 0.5
+        
+        # Normalize for comparison (simple lowercase)
+        a = input_text.lower().strip()
+        b = candidate.lower().strip()
+        
+        if not a or not b:
+            return 0.5
+        
+        if a == b:
+            return 1.0
+        
+        # Simple edit distance (Levenshtein)
+        def levenshtein(s1: str, s2: str) -> int:
+            if len(s1) < len(s2):
+                return levenshtein(s2, s1)
+            if len(s2) == 0:
+                return len(s1)
+            
+            previous_row = list(range(len(s2) + 1))
+            for i, c1 in enumerate(s1):
+                current_row = [i + 1]
+                for j, c2 in enumerate(s2):
+                    insertions = previous_row[j + 1] + 1
+                    deletions = current_row[j] + 1
+                    substitutions = previous_row[j] + (c1 != c2)
+                    current_row.append(min(insertions, deletions, substitutions))
+                previous_row = current_row
+            return previous_row[-1]
+        
+        dist = levenshtein(a, b)
+        max_len = max(len(a), len(b)) or 1
+        similarity = 1.0 - (dist / max_len)
+        return max(0.0, min(1.0, similarity))
+    
+    def _length_score(self, candidate: str) -> float:
+        """
+        PART C: Length score (0.0-1.0).
+        Favors 2-6 chars, penalizes very long or very short.
+        """
+        length = len(candidate)
+        if 2 <= length <= 6:
+            return 1.0
+        elif length == 1:
+            return 0.3
+        elif length == 7 or length == 8:
+            return 0.8
+        elif length == 9 or length == 10:
+            return 0.6
+        else:
+            return 0.4
+
     def _rank_candidate(
-        self, candidate: str, input_text: str, prev: Optional[str] = None
+        self, candidate: str, input_text: str, prev: Optional[str] = None, input_length: int = 0
     ) -> float:
         """
-        Rank candidate using multiple factors.
+        PART C: Soft scoring with weighted factors.
+        
+        FinalScore = 0.40 * phoneticScore + 0.35 * frequencyScore + 0.15 * morphologyScore + 0.10 * lengthScore
+        
         Returns score between 0.0 and 1.0.
         """
-        score = 0.0
+        # 0.40 * phoneticScore
+        phonetic = self._phonetic_score(input_text, candidate)
+        weighted_phonetic = 0.40 * phonetic
 
-        # Frequency score (log-scaled)
+        # 0.35 * frequencyScore (0.0 if not in dictionary, log-scaled if present)
         freq = freq_score(candidate)
-        score += 0.45 * freq
+        weighted_freq = 0.35 * freq
 
-        # Length penalty (prefer shorter, reasonable words)
-        length = len(candidate)
-        if length <= 6:
-            length_score = 1.0
-        elif length <= 10:
-            length_score = 0.7
-        else:
-            length_score = 0.5
-        score += 0.15 * length_score
+        # 0.15 * morphologyScore (soft penalties for odd forms)
+        morph = morphology_score(candidate, input_length)
+        weighted_morph = 0.15 * morph
 
-        # Short token boost (for inputs <= 2 chars, prefer shorter outputs)
-        if len(input_text) <= 2:
-            if length == 2:
-                score += 0.20  # Perfect match for 2-char input
-            elif length <= 2:
-                score += 0.15  # Short outputs preferred
+        # 0.10 * lengthScore (favors 2-6 chars)
+        length = self._length_score(candidate)
+        weighted_length = 0.10 * length
 
-        # Bigram boost (if previous word provided) - optional enhancement
-        if prev:
-            # Simple bigram scoring (can be enhanced with bigram frequency dict)
-            score += 0.05
-
-        # Normalize to 0.0-1.0 range
-        return min(1.0, max(0.0, score))
+        final_score = weighted_phonetic + weighted_freq + weighted_morph + weighted_length
+        
+        # Normalize to 0.0-1.0 range (should already be in range, but ensure)
+        return max(0.0, min(1.0, final_score))
 
 
 # Global service instance

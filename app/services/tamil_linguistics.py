@@ -93,79 +93,95 @@ def normalize_unicode(candidate: str) -> str:
     return normalized
 
 
-def validate_tamil_orthography(word: str) -> bool:
+def is_structurally_invalid_tamil(word: str) -> bool:
     """
-    Validate Tamil orthography rules.
-    Returns True if valid, False if invalid.
-
-    Rules:
-    - dependent vowel cannot start a word
-    - dependent vowel cannot follow another dependent vowel
-    - pulli cannot follow a dependent vowel directly
-    - no double pulli (handled in normalize_unicode)
-    - reject latin/digits
-    - reject invalid endings patterns
+    PART B: Minimal hard filter - reject ONLY structurally impossible Tamil.
+    Returns True if invalid (should be rejected), False if valid.
+    
+    Hard rejections:
+    - Contains consecutive dependent vowel signs
+    - Dependent vowel sign without base consonant (starts with vowel sign)
+    - Contains Latin/digits (leakage)
+    - Contains repeated pulli (்்) - already handled in normalize_unicode but check here too
+    - Invalid Unicode ordering (not pure Tamil)
     """
-    if not word or not TAMIL_REGEX.match(word):
-        return False
-
+    if not word:
+        return True
+    
+    # Reject non-Tamil characters (Latin/digit leakage)
+    if not TAMIL_REGEX.match(word):
+        return True
+    
     # Check for Latin/digit leakage
     if re.search(r"[A-Za-z0-9]", word):
-        return False
+        return True
 
-    # Check invalid endings (common garbage patterns)
-    invalid_endings = ["ொஒ", "்ி", "ுு", "ாா", "ிி", "ீீ", "ூூ", "ெெ", "ேே", "ைை", "ொொ", "ோோ"]
-    for ending in invalid_endings:
-        if word.endswith(ending):
-            return False
-
-    # Check character-by-character rules
+    # Check character-by-character structural rules
     for i, char in enumerate(word):
-        # Dependent vowel cannot start a word
+        # Dependent vowel cannot start a word (no base consonant)
         if i == 0 and char in DEPENDENT_VOWELS:
-            return False
+            return True
 
         if i > 0:
             prev = word[i - 1]
 
-            # Dependent vowel cannot follow another dependent vowel
+            # Consecutive dependent vowels (structurally impossible)
             if prev in DEPENDENT_VOWELS and char in DEPENDENT_VOWELS:
-                return False
+                return True
 
-            # Pulli cannot follow a dependent vowel (very rare/invalid)
-            if prev in DEPENDENT_VOWELS and char == PULLI:
-                return False
+            # Double pulli (structurally invalid)
+            if prev == PULLI and char == PULLI:
+                return True
 
-    return True
+    return False
+
+
+def validate_tamil_orthography(word: str) -> bool:
+    """
+    DEPRECATED: Use is_structurally_invalid_tamil instead.
+    Kept for backward compatibility but delegates to new function.
+    """
+    return not is_structurally_invalid_tamil(word)
+
+
+def morphology_score(candidate: str, input_length: int) -> float:
+    """
+    PART C: Soft morphology scoring (penalties, not rejection).
+    Returns score between 0.0 and 1.0.
+    
+    Penalizes but never rejects:
+    - Unusually long expansions for short inputs
+    - Excessive dependent vowel usage
+    - Odd suffix patterns
+    """
+    if not candidate:
+        return 0.0
+    
+    score = 1.0
+    
+    # Penalize long expansions for short inputs (soft penalty)
+    if input_length <= 2 and len(candidate) > 3:
+        # Reduce score but don't reject
+        penalty = min(0.4, (len(candidate) - 3) * 0.1)
+        score -= penalty
+    
+    # Penalize excessive dependent vowel usage (soft)
+    dep_vowel_count = sum(1 for c in candidate if c in DEPENDENT_VOWELS)
+    if dep_vowel_count > 3:
+        score -= 0.2
+    
+    # Prefer reasonable lengths
+    if len(candidate) > 12:
+        score -= 0.3
+    
+    return max(0.0, score)
 
 
 def eliminate_morphological_garbage(candidate: str, input_length: int) -> bool:
     """
-    Eliminate morphologically invalid forms.
-    Returns True if valid, False if garbage.
-
-    Rules:
-    - candidates longer than 3 chars when input length <= 2
-    - mechanically expanded vowels (e.g. முஉ, முஉஉ)
-    - meaningless suffix chaining
+    DEPRECATED: Morphological filtering is now soft scoring only.
+    Kept for backward compatibility - always returns True (no hard rejection).
     """
-    if not candidate:
-        return False
-
-    # Short input (<=2 chars) should not produce long expansions (>3 chars)
-    if input_length <= 2 and len(candidate) > 3:
-        return False
-
-    # Detect mechanically expanded vowels (consecutive dependent vowels already checked in orthography)
-    # Additional check: patterns like "முஉ", "முஉஉ" (base + dependent vowel + dependent vowel)
-    # This is caught by orthography validation, but add extra safety
-
-    # Check for excessive dependent vowel repetition in different positions
-    dep_vowel_count = sum(1 for c in candidate if c in DEPENDENT_VOWELS)
-    if dep_vowel_count > 2 and input_length <= 2:
-        # Too many dependent vowels for a short input
-        return False
-
     return True
 
 
