@@ -5,7 +5,7 @@ import time
 import threading
 import hashlib
 from collections import OrderedDict
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 
 class LRUCache:
@@ -13,7 +13,7 @@ class LRUCache:
         self.max_size = max_size
         self.default_ttl = default_ttl
         self._lock = threading.RLock()
-        self._store: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+        self._store: OrderedDict[str, Tuple[float, Any]] = OrderedDict()
         self.cache_hits = 0
         self.cache_misses = 0
 

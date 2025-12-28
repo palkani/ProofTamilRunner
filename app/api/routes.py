@@ -8,7 +8,6 @@ from app.core.config import settings
 
 router = APIRouter()
 service = TransliterationService()
-suggest_service = get_suggest_service()
 
 
 def _no_cache_headers(resp: Response):
@@ -59,7 +58,8 @@ async def transliterate_suggest(
     """
     rid = getattr(getattr(request, "state", None), "request_id", "n/a") if request else "n/a"
     
-    # Use new suggest service with full pipeline
+    # Use new suggest service with full pipeline (lazy initialization)
+    suggest_service = get_suggest_service()
     suggestions, metadata = await suggest_service.suggest(q, limit, mode, prev, rid)
     
     if response is not None:
