@@ -5,8 +5,9 @@ Uses existing transliteration mechanism to generate strict transliterations.
 For single consonant inputs, ensures both base consonant and consonant + pulli.
 """
 
+import asyncio
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from app.suggestion_engine.types import Candidate
 from app.suggestion_engine.normalization import (
     get_consonant_base,
@@ -19,6 +20,13 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Circuit breaker state
+_runner_failure_count = 0
+_runner_last_failure_time = 0.0
+CIRCUIT_BREAKER_THRESHOLD = 5  # Fail after 5 consecutive failures
+CIRCUIT_BREAKER_RESET_SECONDS = 60  # Reset after 60 seconds
+RUNNER_TIMEOUT_SECONDS = 3  # 3 second timeout for runner calls
+
 
 class CoreTransliterationLayer:
     """Layer A: Core strict transliteration."""
@@ -30,7 +38,7 @@ class CoreTransliterationLayer:
 
     async def generate(
         self, q: str, mode: str, request_id: str = "n/a"
-    ) -> List[Candidate]:
+    ) -> Tuple[List[Candidate], bool]:
         """
         Generate core transliteration candidates.
         
@@ -44,32 +52,71 @@ class CoreTransliterationLayer:
         if not q_lower:
             return candidates
 
-        # Try external runner first if enabled
+        # Try external runner first if enabled (with circuit breaker and timeout)
         runner_candidates = []
+        runner_error = False
+        
         if self.runner_enabled and self.client:
-            try:
-                data = await self.client.transliterate(q)
-                outputs = [
-                    s.get("word") or s.get("ta")
-                    for s in data.get("suggestions", [])
-                    if s
-                ]
-                for out in outputs:
-                    if out and is_valid_tamil_word(out):
-                        runner_candidates.append(
-                            Candidate(
-                                word=normalize_unicode(out),
-                                base_score=0.95,
-                                source_layer="core_runner",
-                                debug={"runner": True},
+            # Check circuit breaker
+            global _runner_failure_count, _runner_last_failure_time
+            import time as time_module
+            
+            current_time = time_module.time()
+            if _runner_failure_count >= CIRCUIT_BREAKER_THRESHOLD:
+                if current_time - _runner_last_failure_time < CIRCUIT_BREAKER_RESET_SECONDS:
+                    logger.debug(
+                        "core_transliteration_circuit_open request_id=%s failures=%d",
+                        request_id,
+                        _runner_failure_count,
+                    )
+                    runner_error = True
+                else:
+                    # Reset circuit breaker after timeout
+                    _runner_failure_count = 0
+                    logger.info("core_transliteration_circuit_reset request_id=%s", request_id)
+            
+            if not runner_error:
+                try:
+                    # Add timeout guard
+                    data = await asyncio.wait_for(
+                        self.client.transliterate(q),
+                        timeout=RUNNER_TIMEOUT_SECONDS
+                    )
+                    outputs = [
+                        s.get("word") or s.get("ta")
+                        for s in data.get("suggestions", [])
+                        if s
+                    ]
+                    for out in outputs:
+                        if out and is_valid_tamil_word(out):
+                            runner_candidates.append(
+                                Candidate(
+                                    word=normalize_unicode(out),
+                                    base_score=0.95,
+                                    source_layer="core_runner",
+                                    debug={"runner": True},
+                                )
                             )
-                        )
-            except Exception as e:
-                logger.warning(
-                    "core_transliteration_runner_failed request_id=%s error=%s",
-                    request_id,
-                    str(e),
-                )
+                    # Reset failure count on success
+                    _runner_failure_count = 0
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "core_transliteration_runner_timeout request_id=%s timeout=%ds",
+                        request_id,
+                        RUNNER_TIMEOUT_SECONDS,
+                    )
+                    runner_error = True
+                    _runner_failure_count += 1
+                    _runner_last_failure_time = current_time
+                except Exception as e:
+                    logger.warning(
+                        "core_transliteration_runner_failed request_id=%s error=%s",
+                        request_id,
+                        str(e),
+                    )
+                    runner_error = True
+                    _runner_failure_count += 1
+                    _runner_last_failure_time = current_time
 
         # Fallback to adapter
         adapter_candidates = []
@@ -126,5 +173,5 @@ class CoreTransliterationLayer:
             if word not in seen or seen[word].base_score < cand.base_score:
                 seen[word] = cand
 
-        return list(seen.values())
+        return list(seen.values()), runner_error
 

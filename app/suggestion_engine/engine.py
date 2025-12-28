@@ -85,6 +85,7 @@ class SuggestionEngine:
         layers_used: List[str] = []
         cache_hits = {"core": False, "final": False}
         runner_error = False
+        runner_error_source = None
 
         try:
             # Validate inputs
@@ -139,9 +140,13 @@ class SuggestionEngine:
                 cache_hits["core"] = True
                 core_candidates = cached_core
             else:
-                core_candidates = await self.core_layer.generate(
+                # Generate and check for runner errors
+                core_candidates, runner_err = await self.core_layer.generate(
                     request.q, request.mode, request_id
                 )
+                if runner_err:
+                    runner_error = True
+                    runner_error_source = "core_transliteration"
                 if core_candidates:
                     self.core_cache.set(core_cache_key, core_candidates)
             layer_timings["core"] = (time.perf_counter() - layer_start) * 1000

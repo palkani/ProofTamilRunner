@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 
 class TransliterateRequest(BaseModel):
@@ -16,3 +16,4 @@ class Suggestion(BaseModel):
 class TransliterateResponse(BaseModel):
     success: bool = True
     suggestions: List[Suggestion]
+    meta: Optional[Dict[str, Any]] = None

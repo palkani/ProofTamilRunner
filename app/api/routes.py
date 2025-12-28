@@ -1,5 +1,6 @@
 import logging
-from typing import Optional
+import time
+from typing import Optional, Dict
 from fastapi import APIRouter, Request, Response
 from app.api.schemas import TransliterateRequest, TransliterateResponse
 from app.services.transliteration import TransliterationService
@@ -7,6 +8,12 @@ from app.core.config import settings
 
 router = APIRouter()
 service = TransliterationService()
+
+# Metrics counters (lightweight, in-memory)
+_suggest_requests_total: Dict[str, int] = {}
+_suggest_cache_hit_total: Dict[str, int] = {"core": 0, "final": 0}
+_suggest_runner_errors_total = 0
+_suggest_latency_buckets: Dict[str, list] = {}  # mode -> list of latencies
 
 
 def _no_cache_headers(resp: Response):
@@ -76,6 +83,10 @@ async def transliterate_suggest(
     from app.suggestion_engine.types import SuggestionRequest
     
     rid = getattr(request.state, "request_id", "n/a")
+    request_start = time.perf_counter()
+    
+    # Metrics: increment request counter
+    _suggest_requests_total[mode] = _suggest_requests_total.get(mode, 0) + 1
     
     # Validate inputs
     if not q or len(q) < 1 or len(q) > 40:
@@ -116,6 +127,26 @@ async def transliterate_suggest(
                 raise HTTPException(status_code=400, detail=result.error.get("message", "Invalid request"))
             raise HTTPException(status_code=500, detail="Internal error")
         
+        # Metrics: track cache hits and runner errors
+        if result.meta:
+            cache_hits = result.meta.get("cache_hits", {})
+            if cache_hits.get("core", False):
+                _suggest_cache_hit_total["core"] += 1
+            if cache_hits.get("final", False):
+                _suggest_cache_hit_total["final"] += 1
+            if result.meta.get("runner_error", False):
+                global _suggest_runner_errors_total
+                _suggest_runner_errors_total += 1
+        
+        # Metrics: track latency
+        request_latency_ms = (time.perf_counter() - request_start) * 1000
+        if mode not in _suggest_latency_buckets:
+            _suggest_latency_buckets[mode] = []
+        _suggest_latency_buckets[mode].append(request_latency_ms)
+        # Keep only last 1000 measurements per mode
+        if len(_suggest_latency_buckets[mode]) > 1000:
+            _suggest_latency_buckets[mode] = _suggest_latency_buckets[mode][-1000:]
+        
         # Set response headers
         _no_cache_headers(response)
         if result.meta:
@@ -129,6 +160,8 @@ async def transliterate_suggest(
                 response.headers["X-Cache-Hit-Final"] = str(cache_hits.get("final", False)).lower()
             if "total_time_ms" in result.meta:
                 response.headers["X-Latency-Ms"] = str(int(result.meta["total_time_ms"]))
+            if result.meta.get("runner_error", False):
+                response.headers["X-Runner-Error"] = "true"
         
         # Convert to response format (backwards compatible)
         suggestions = result.suggestions
@@ -154,7 +187,12 @@ async def transliterate_suggest(
             result.meta,
         )
         
-        return TransliterateResponse(success=True, suggestions=suggestions)
+        # Return with meta field as required by spec
+        return TransliterateResponse(
+            success=True,
+            suggestions=suggestions,
+            meta=result.meta if result.meta else None
+        )
         
     except HTTPException:
         raise
