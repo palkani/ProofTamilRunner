@@ -199,10 +199,11 @@ async def _transliterate_suggest_impl(
         )
         
         # Return with meta field as required by spec
+        # Return response without meta field (as requested)
         return TransliterateResponse(
             success=True,
             suggestions=suggestions,
-            meta=result.meta if result.meta else None
+            meta=None  # Exclude meta from response
         )
         
     except HTTPException:
