@@ -88,10 +88,16 @@ async def _transliterate_suggest_impl(
     original_mode = mode
     logging.debug(f"suggest_api_request request_id={rid} q={q} original_mode={original_mode}")
     
-    # Map old "spoken" mode to "smart" for backwards compatibility (BEFORE validation)
-    if mode == "spoken":
-        mode = "smart"
-        logging.debug(f"suggest_api_mode_mapped request_id={rid} from=spoken to=smart")
+    # Map old mode values to "smart" for backwards compatibility (BEFORE validation)
+    mode_mappings = {
+        "spoken": "smart",
+        "char": "smart",  # Handle mode=char from frontend
+        "written": "strict",
+    }
+    if mode in mode_mappings:
+        mapped_mode = mode_mappings[mode]
+        logging.debug(f"suggest_api_mode_mapped request_id={rid} from={mode} to={mapped_mode}")
+        mode = mapped_mode
     
     # Validate inputs
     if not q or len(q) < 1 or len(q) > 40:
