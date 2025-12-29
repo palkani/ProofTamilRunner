@@ -92,6 +92,7 @@ async def _transliterate_suggest_impl(
     mode_mappings = {
         "spoken": "smart",
         "char": "smart",  # Handle mode=char from frontend
+        "word": "smart",  # Handle mode=word from frontend
         "written": "strict",
     }
     if mode in mode_mappings:
