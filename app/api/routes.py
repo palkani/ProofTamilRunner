@@ -1,7 +1,7 @@
 import logging
 import time
 from typing import Optional, Dict
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Request, Response, Query
 from app.api.schemas import TransliterateRequest, TransliterateResponse
 from app.services.transliteration import TransliterationService
 from app.core.config import settings
@@ -48,8 +48,7 @@ async def transliterate(req: TransliterateRequest, request: Request, response: R
     return TransliterateResponse(success=True, suggestions=suggestions)
 
 
-@router.get("/transliterate/suggest", response_model=TransliterateResponse)
-async def transliterate_suggest(
+async def _transliterate_suggest_impl(
     q: str,
     request: Request,
     response: Response,
@@ -85,9 +84,14 @@ async def transliterate_suggest(
     rid = getattr(request.state, "request_id", "n/a")
     request_start = time.perf_counter()
     
+    # Log incoming mode for debugging
+    original_mode = mode
+    logging.debug(f"suggest_api_request request_id={rid} q={q} original_mode={original_mode}")
+    
     # Map old "spoken" mode to "smart" for backwards compatibility (BEFORE validation)
     if mode == "spoken":
         mode = "smart"
+        logging.debug(f"suggest_api_mode_mapped request_id={rid} from=spoken to=smart")
     
     # Validate inputs
     if not q or len(q) < 1 or len(q) > 40:
@@ -95,6 +99,7 @@ async def transliterate_suggest(
     if limit < 1 or limit > 20:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 20")
     if mode not in ("smart", "strict"):
+        logging.error(f"suggest_api_validation_error request_id={rid} q={q} mode={mode} original_mode={original_mode}")
         raise HTTPException(status_code=400, detail="mode must be 'smart' or 'strict'")
     
     # Metrics: increment request counter (after mode mapping)
@@ -207,3 +212,33 @@ async def transliterate_suggest(
             q,
         )
         return error_result
+
+
+@router.get("/transliterate/suggest", response_model=TransliterateResponse)
+async def transliterate_suggest(
+    q: str,
+    request: Request,
+    response: Response,
+    limit: int = Query(8, ge=1, le=20),
+    mode: str = Query("smart"),  # No pattern validation - we handle it in the function
+    context: Optional[str] = Query(None, max_length=5000),
+    cursor: Optional[int] = Query(None, ge=0),
+    prev: Optional[str] = None,
+):
+    """Alias for /transliterate/suggest endpoint."""
+    return await _transliterate_suggest_impl(q, request, response, limit, mode, context, cursor, prev)
+
+
+@router.get("/ime/suggest", response_model=TransliterateResponse)
+async def ime_suggest(
+    q: str,
+    request: Request,
+    response: Response,
+    limit: int = Query(8, ge=1, le=20),
+    mode: str = Query("smart"),  # No pattern validation - we handle it in the function
+    context: Optional[str] = Query(None, max_length=5000),
+    cursor: Optional[int] = Query(None, ge=0),
+    prev: Optional[str] = None,
+):
+    """IME suggest endpoint - accepts 'spoken' mode for backwards compatibility."""
+    return await _transliterate_suggest_impl(q, request, response, limit, mode, context, cursor, prev)
