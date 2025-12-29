@@ -17,3 +17,7 @@ class TransliterateResponse(BaseModel):
     success: bool = True
     suggestions: List[Suggestion]
     meta: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        # Exclude meta field from response when it's None
+        exclude_none = True
