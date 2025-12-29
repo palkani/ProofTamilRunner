@@ -199,13 +199,15 @@ async def _transliterate_suggest_impl(
             result.meta,
         )
         
-        # Return with meta field as required by spec
-        # Return response without meta field (as requested)
-        return TransliterateResponse(
+        # Return response without meta field (exclude None fields)
+        response = TransliterateResponse(
             success=True,
             suggestions=suggestions,
-            meta=None  # Exclude meta from response
+            meta=None
         )
+        # Convert to dict and remove None fields
+        response_dict = response.dict(exclude_none=True)
+        return response_dict
         
     except HTTPException:
         raise
