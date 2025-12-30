@@ -228,28 +228,49 @@ class TamilTransliterator:
     def get_suggestions(self, text: str, limit: int = 8) -> List[Dict[str, Any]]:
         if not text:
             return []
+        
+        # Import validation function
+        from app.suggestion_engine.normalization import is_valid_tamil_word, clean_tamil_text
+        
         text_lower = text.lower().strip()
         suggestions = []
         seen = set()
         
+        # Helper to validate and add suggestion
+        def add_suggestion(word: str, score: float):
+            if not word or not word.strip():
+                return
+            # Clean the word (remove formatting characters)
+            cleaned = clean_tamil_text(word)
+            # Validate Tamil orthography
+            if not is_valid_tamil_word(cleaned):
+                return
+            # Check for invalid patterns (e.g., vowel + standalone vowel)
+            if cleaned in seen:
+                return
+            seen.add(cleaned)
+            suggestions.append({"word": cleaned, "score": score})
+        
+        # 1. Check common words dictionary first (highest quality)
         for key, words in self.COMMON_WORDS.items():
             if key.startswith(text_lower) or text_lower.startswith(key):
                 for word in words:
-                    if word not in seen:
-                        seen.add(word)
-                        suggestions.append({"word": word, "score": 0.95 if key == text_lower else 0.85})
+                    add_suggestion(word, 0.95 if key == text_lower else 0.85)
         
+        # 2. Direct transliteration (high quality)
         direct = self.transliterate(text_lower)
-        if direct and direct not in seen:
-            seen.add(direct)
-            suggestions.insert(0, {"word": direct, "score": 1.0})
+        if direct:
+            add_suggestion(direct, 1.0)
         
-        for suffix in ["a", "aa", "am", "an", "ai", "u", "i"]:
+        # 3. Add suffix variations only for common suffixes that make sense
+        # Only add suffixes that create valid Tamil words
+        valid_suffixes = ["a", "aa", "am", "an"]  # Removed "ai", "u", "i" as they create invalid words
+        for suffix in valid_suffixes:
             trans = self.transliterate(text_lower + suffix)
-            if trans and trans not in seen:
-                seen.add(trans)
-                suggestions.append({"word": trans, "score": 0.7})
+            if trans:
+                add_suggestion(trans, 0.7)
         
+        # Sort by score and return top suggestions
         suggestions.sort(key=lambda x: x["score"], reverse=True)
         return suggestions[:limit]
 
