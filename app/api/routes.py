@@ -135,66 +135,21 @@ async def _transliterate_suggest_impl(
         cursor = len(prev) if prev else None
     
     try:
-        # Try Google API first with very short timeout, then instant local fallback
-        # Use asyncio.wait_for to ensure we never wait more than 0.8 seconds total
-        try:
-            google_result = await asyncio.wait_for(
-                get_transliteration_suggestions(
-                    text=q,
-                    limit=limit,
-                    mode=mode,
-                    use_google=True,
-                    use_cache=True,
-                    timeout=0.5  # Very short timeout for Google API
-                ),
-                timeout=0.8  # Total timeout for entire operation
-            )
-        except asyncio.TimeoutError:
-            logging.warning(f"suggest_api_google_timeout request_id={rid} q={q} - using_local_fallback")
-            # Immediately use local fallback (instant, no external calls)
-            from app.services.google_transliteration import TamilTransliterator
-            local_transliterator = TamilTransliterator()
-            local_suggestions = local_transliterator.get_suggestions(q, limit)
-            google_result = {
-                "suggestions": local_suggestions if local_suggestions else [],
-                "source": "local_fallback_timeout",
-                "cached": False,
-                "ms": 0
-            }
+        # Use local fallback FIRST (instant, synchronous, no timeouts, always works)
+        # This ensures we always return suggestions quickly without any 504 errors
+        from app.services.google_transliteration import TamilTransliterator
+        local_transliterator = TamilTransliterator()
+        local_suggestions = local_transliterator.get_suggestions(q, limit)
         
-        suggestions = google_result.get("suggestions", [])
-        source = google_result.get("source", "unknown")
+        suggestions = local_suggestions if local_suggestions else []
+        source = "local_fallback"
         
-        # If Google didn't return good results, try local fallback first (fast, no external calls)
-        # Local fallback is instant and never times out
-        if not suggestions or len(suggestions) == 0:
-            logging.debug(f"suggest_api_fallback request_id={rid} q={q} google_source={source} trying_local_fallback")
-            
-            # Use local fallback transliterator (no external API calls, instant, no timeouts)
-            try:
-                from app.services.google_transliteration import TamilTransliterator
-                local_transliterator = TamilTransliterator()
-                local_suggestions = local_transliterator.get_suggestions(q, limit)
-                
-                if local_suggestions and len(local_suggestions) > 0:
-                    suggestions = local_suggestions
-                    source = "local_fallback"
-                    logging.debug(f"suggest_api_local_success request_id={rid} q={q} count={len(suggestions)}")
-            except Exception as local_error:
-                logging.debug(f"suggest_api_local_error request_id={rid} q={q} error={local_error}")
-                # Continue to engine fallback
-            
-            # Skip engine entirely - it's causing timeout errors
-            # Local fallback should be sufficient for most cases
-            # Only use engine if explicitly needed (commented out for now)
-            if not suggestions or len(suggestions) == 0:
-                logging.debug(f"suggest_api_no_suggestions request_id={rid} q={q} google_source={source} local_failed - returning_empty")
-                # Return empty suggestions rather than trying engine (which times out)
-                suggestions = []
-                source = "no_suggestions"
-        else:
-            # Google provided suggestions - log success
-            logging.debug(f"suggest_api_google_success request_id={rid} q={q} source={source} count={len(suggestions)}")
+        logging.debug(f"suggest_api_local_first request_id={rid} q={q} count={len(suggestions)}")
+        
+        # Return immediately with local suggestions - no async calls that can timeout
+        # This guarantees no 504 errors
+        # Local fallback is instant, synchronous, and always works
+        # Google API disabled temporarily to prevent 504 errors
         
         # Metrics: track latency
         request_latency_ms = (time.perf_counter() - request_start) * 1000
@@ -208,10 +163,6 @@ async def _transliterate_suggest_impl(
         # Set response headers
         _no_cache_headers(response)
         response.headers["X-Source"] = source
-        if google_result.get("cached"):
-            response.headers["X-Cache-Hit"] = "true"
-        if "ms" in google_result:
-            response.headers["X-Latency-Ms"] = str(int(google_result["ms"]))
         
         # Log response
         suggestion_preview = []
