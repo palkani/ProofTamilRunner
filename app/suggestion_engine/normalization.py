@@ -134,17 +134,30 @@ def get_consonant_base(roman: str) -> Optional[str]:
 def has_invalid_vowel_sequence(word: str) -> bool:
     """
     Check if a Tamil word has invalid vowel sequences.
-    Two dependent vowels in a row is linguistically invalid.
+    - Two dependent vowels in a row is invalid
+    - Dependent vowel followed by independent vowel is invalid (e.g., "ா" + "அ")
+    - Independent vowel followed by dependent vowel is invalid (e.g., "அ" + "ா")
     """
     if not word or len(word) < 2:
         return False
 
+    # Tamil independent vowels (standalone vowels)
+    INDEPENDENT_VOWELS = {'அ', 'ஆ', 'இ', 'ஈ', 'உ', 'ஊ', 'எ', 'ஏ', 'ஐ', 'ஒ', 'ஓ', 'ஔ'}
+    
     for i in range(1, len(word)):
         prev = word[i - 1]
         curr = word[i]
 
         # Two dependent vowels in a row is invalid
         if prev in DEPENDENT_VOWELS and curr in DEPENDENT_VOWELS:
+            return True
+        
+        # Dependent vowel followed by independent vowel is invalid (e.g., "முருகா" + "அ" = "முருகாஅ")
+        if prev in DEPENDENT_VOWELS and curr in INDEPENDENT_VOWELS:
+            return True
+        
+        # Independent vowel followed by dependent vowel is invalid (e.g., "அ" + "ா")
+        if prev in INDEPENDENT_VOWELS and curr in DEPENDENT_VOWELS:
             return True
 
     return False
