@@ -68,6 +68,29 @@ def normalize_unicode(text: str) -> str:
     return unicodedata.normalize('NFC', text)
 
 
+def clean_tamil_text(text: str) -> str:
+    """
+    Clean Tamil text by removing formatting characters like superscript numbers.
+    
+    Removes:
+    - Superscript numbers: ¹²³⁴⁵⁶⁷⁸⁹⁰
+    - Other formatting characters that may appear in transliteration output
+    """
+    if not text:
+        return text
+    
+    # Remove superscript numbers (Unicode superscript characters)
+    # U+00B9 to U+00B0: ¹²³⁴⁵⁶⁷⁸⁹⁰
+    # Also check for other common formatting characters
+    cleaned = re.sub(r'[\u00B9\u00B2\u00B3\u2070\u2074\u2075\u2076\u2077\u2078\u2079\u2080\u2081\u2082\u2083\u2084\u2085\u2086\u2087\u2088\u2089]', '', text)
+    
+    # Remove any other non-Tamil, non-whitespace, non-punctuation characters
+    # Keep Tamil characters (U+0B80-U+0BFF), spaces, and common punctuation
+    cleaned = re.sub(r'[^\u0B80-\u0BFF\s.,;:!?\'"()\[\]{}\-—–]', '', cleaned)
+    
+    return cleaned.strip()
+
+
 def is_tamil_char(ch: str) -> bool:
     """Check if character is in Tamil Unicode block."""
     if not ch:

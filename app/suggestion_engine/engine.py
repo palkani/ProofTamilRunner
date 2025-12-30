@@ -18,6 +18,7 @@ from app.suggestion_engine.normalization import (
     normalize_unicode,
     is_valid_tamil_word,
     extract_tamil_boundary,
+    clean_tamil_text,
 )
 from app.suggestion_engine.layers.core_transliteration import CoreTransliterationLayer
 from app.suggestion_engine.layers.tamil_vowel_expand import TamilVowelExpandLayer
@@ -236,7 +237,10 @@ class SuggestionEngine:
         # Deduplicate by normalized word (keep highest score)
         seen: Dict[str, Candidate] = {}
         for cand in candidates:
-            normalized = normalize_unicode(cand.word)
+            # First clean the text to remove formatting characters
+            cleaned = clean_tamil_text(cand.word)
+            # Then normalize Unicode
+            normalized = normalize_unicode(cleaned)
             if not is_valid_tamil_word(normalized):
                 continue
 
