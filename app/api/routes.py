@@ -122,23 +122,70 @@ async def _transliterate_suggest_impl(
     # Metrics: increment request counter
     _suggest_requests_total[mode] = _suggest_requests_total.get(mode, 0) + 1
     
-    # CRITICAL: Use ONLY local transliterator - instant, synchronous, no timeouts, no external calls
-    # This is the ONLY code path - no async operations, no Google API, no engine calls
+    # Use Google API with local fallback - fast, high quality suggestions
     try:
+        # Try Google API first (fast timeout, non-blocking)
+        from app.services.google_transliteration import get_transliteration_suggestions
         from app.services.google_transliteration import TamilTransliterator
-        local_transliterator = TamilTransliterator()
-        local_suggestions = local_transliterator.get_suggestions(q, limit)
         
-        suggestions = local_suggestions if local_suggestions else []
-        source = "local"
+        # Get suggestions with Google API (with fast timeout and local fallback)
+        google_result = await asyncio.wait_for(
+            get_transliteration_suggestions(
+                text=q,
+                limit=limit,
+                mode=mode,
+                use_google=True,
+                use_cache=True,
+                timeout=0.4  # Fast timeout - fail fast to local
+            ),
+            timeout=0.5  # Total timeout
+        )
         
-        logging.debug(f"suggest_api_local request_id={rid} q={q} count={len(suggestions)}")
+        suggestions = google_result.get("suggestions", [])
+        source = google_result.get("source", "local")
         
+        # If Google didn't return enough, use local fallback
+        if not suggestions or len(suggestions) < 3:
+            local_transliterator = TamilTransliterator()
+            local_suggestions = local_transliterator.get_suggestions(q, limit)
+            if local_suggestions:
+                # Merge and deduplicate
+                seen = {s["word"]: s for s in suggestions}
+                for local_sug in local_suggestions:
+                    word = local_sug["word"]
+                    if word not in seen:
+                        seen[word] = local_sug
+                        suggestions.append(local_sug)
+                    elif local_sug["score"] > seen[word].get("score", 0):
+                        seen[word] = local_sug
+                suggestions = list(seen.values())
+                suggestions.sort(key=lambda x: x.get("score", 0), reverse=True)
+                source = "local" if source == "fallback" else source
+        
+        logging.debug(f"suggest_api request_id={rid} q={q} source={source} count={len(suggestions)}")
+        
+    except asyncio.TimeoutError:
+        # Timeout - use local fallback immediately
+        logging.debug(f"suggest_api_timeout request_id={rid} q={q} - using_local_fallback")
+        try:
+            from app.services.google_transliteration import TamilTransliterator
+            local_transliterator = TamilTransliterator()
+            suggestions = local_transliterator.get_suggestions(q, limit)
+            source = "local"
+        except Exception:
+            suggestions = []
+            source = "error"
     except Exception as e:
-        # If local transliterator fails (shouldn't happen), return empty suggestions
-        logging.error(f"suggest_api_local_error request_id={rid} q={q} error={str(e)}", exc_info=True)
-        suggestions = []
-        source = "error"
+        # Error - use local fallback
+        logging.error(f"suggest_api_error request_id={rid} q={q} error={str(e)}", exc_info=True)
+        try:
+            from app.services.google_transliteration import TamilTransliterator
+            local_transliterator = TamilTransliterator()
+            suggestions = local_transliterator.get_suggestions(q, limit)
+            source = "local"
+        except Exception:
+            suggestions = []
+            source = "error"
     
     # Metrics: track latency (should be < 10ms for local transliterator)
     request_latency_ms = (time.perf_counter() - request_start) * 1000
