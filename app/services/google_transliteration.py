@@ -272,7 +272,25 @@ class TamilTransliterator:
         
         # Sort by score and return top suggestions
         suggestions.sort(key=lambda x: x["score"], reverse=True)
-        return suggestions[:limit]
+        
+        # Deduplicate by word (keep highest score)
+        seen_words = {}
+        deduplicated = []
+        for sug in suggestions:
+            word = sug["word"]
+            if word not in seen_words:
+                seen_words[word] = sug["score"]
+                deduplicated.append(sug)
+            elif sug["score"] > seen_words[word]:
+                # Replace with higher score
+                seen_words[word] = sug["score"]
+                # Remove old entry and add new one
+                deduplicated = [s for s in deduplicated if s["word"] != word]
+                deduplicated.append(sug)
+                # Re-sort after replacement
+                deduplicated.sort(key=lambda x: x["score"], reverse=True)
+        
+        return deduplicated[:limit]
 
 
 # Initialize global instances
