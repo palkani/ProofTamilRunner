@@ -76,27 +76,20 @@ async def _transliterate_suggest_impl(
     prev: Optional[str] = None,  # Backwards compatibility
 ):
     """
-    Enhanced suggest API with layered algorithm for context-aware Tamil suggestions.
+    Fast suggest API using local transliterator only - no external calls, no timeouts.
     
-    Returns Tamil transliteration suggestions with multiple layers:
-    - Layer A: Core Transliteration (strict)
-    - Layer B: Tamil Vowel Expansion
-    - Layer C: Context-Aware Completion
-    - Layer D: Frequency Ranking
-    - Layer E: Heuristic Neighbors (smart mode only)
-    - Layer F: Dedup + Final Ranker
+    Returns Tamil transliteration suggestions instantly using local dictionary.
+    This ensures zero 504 errors and fast response times.
     
     Parameters:
     - q: Roman input fragment (1-40 characters)
     - limit: Maximum suggestions (1-20, default: 8)
-    - mode: "smart" (default) or "strict"
-    - context: Full text around cursor for context-aware suggestions (optional)
-    - cursor: Cursor position within context (optional)
-    - prev: Previous context (backwards compatibility, maps to context)
+    - mode: "smart" (default) or "strict" (mapped from "spoken", "char", "word")
+    - context: Full text around cursor (optional, not used currently)
+    - cursor: Cursor position (optional, not used currently)
+    - prev: Previous context (backwards compatibility, not used currently)
     """
     from fastapi import HTTPException
-    from app.suggestion_engine.engine import SuggestionEngine
-    from app.suggestion_engine.types import SuggestionRequest
     
     rid = getattr(request.state, "request_id", "n/a")
     request_start = time.perf_counter()
@@ -108,8 +101,8 @@ async def _transliterate_suggest_impl(
     # Map old mode values to "smart" for backwards compatibility (BEFORE validation)
     mode_mappings = {
         "spoken": "smart",
-        "char": "smart",  # Handle mode=char from frontend
-        "word": "smart",  # Handle mode=word from frontend
+        "char": "smart",
+        "word": "smart",
         "written": "strict",
     }
     if mode in mode_mappings:
@@ -126,132 +119,69 @@ async def _transliterate_suggest_impl(
         logging.error(f"suggest_api_validation_error request_id={rid} q={q} mode={mode} original_mode={original_mode}")
         raise HTTPException(status_code=400, detail="mode must be 'smart' or 'strict'")
     
-    # Metrics: increment request counter (after mode mapping)
+    # Metrics: increment request counter
     _suggest_requests_total[mode] = _suggest_requests_total.get(mode, 0) + 1
     
-    # Use prev as context if context not provided (backwards compatibility)
-    if context is None and prev:
-        context = prev
-        cursor = len(prev) if prev else None
-    
+    # CRITICAL: Use ONLY local transliterator - instant, synchronous, no timeouts, no external calls
+    # This is the ONLY code path - no async operations, no Google API, no engine calls
     try:
-        # Use local fallback FIRST (instant, synchronous, no timeouts, always works)
-        # This ensures we always return suggestions quickly without any 504 errors
         from app.services.google_transliteration import TamilTransliterator
         local_transliterator = TamilTransliterator()
         local_suggestions = local_transliterator.get_suggestions(q, limit)
         
         suggestions = local_suggestions if local_suggestions else []
-        source = "local_fallback"
+        source = "local"
         
-        logging.debug(f"suggest_api_local_first request_id={rid} q={q} count={len(suggestions)}")
+        logging.debug(f"suggest_api_local request_id={rid} q={q} count={len(suggestions)}")
         
-        # Return immediately with local suggestions - no async calls that can timeout
-        # This guarantees no 504 errors
-        # Local fallback is instant, synchronous, and always works
-        # Google API disabled temporarily to prevent 504 errors
-        
-        # Metrics: track latency
-        request_latency_ms = (time.perf_counter() - request_start) * 1000
-        if mode not in _suggest_latency_buckets:
-            _suggest_latency_buckets[mode] = []
-        _suggest_latency_buckets[mode].append(request_latency_ms)
-        # Keep only last 1000 measurements per mode
-        if len(_suggest_latency_buckets[mode]) > 1000:
-            _suggest_latency_buckets[mode] = _suggest_latency_buckets[mode][-1000:]
-        
-        # Set response headers
-        _no_cache_headers(response)
-        response.headers["X-Source"] = source
-        
-        # Log response
-        suggestion_preview = []
-        for s in suggestions[:5]:
-            if isinstance(s, dict):
-                word = s.get("word", "")
-                score = s.get("score", 0.0)
-                suggestion_preview.append(f"{word}({score:.2f})")
-            else:
-                suggestion_preview.append(str(s)[:20])
-        
-        logging.info(
-            "suggest_api_response request_id=%s q=%s mode=%s source=%s count=%d suggestions=%s",
-            rid,
-            q,
-            mode,
-            source,
-            len(suggestions),
-            suggestion_preview,
-        )
-        
-        # Always return success=True with suggestions (even if empty) to maintain compatibility
-        # Never return error responses - frontend expects {success: true, suggestions: [...]}
-        response_obj = TransliterateResponse(
-            success=True,
-            suggestions=suggestions if suggestions else [],
-            meta=None
-        )
-        # Convert to dict and remove None fields
-        response_dict = response_obj.dict(exclude_none=True)
-        return response_dict
-        
-    except HTTPException:
-        raise
-    except asyncio.TimeoutError:
-        logging.warning(f"suggest_api_timeout request_id={rid} q={q} overall_timeout - using_local_fallback")
-        _no_cache_headers(response)
-        # On timeout, try instant local fallback (no external calls, no timeouts)
-        try:
-            from app.services.google_transliteration import TamilTransliterator
-            local_transliterator = TamilTransliterator()
-            local_suggestions = local_transliterator.get_suggestions(q, limit)
-            if local_suggestions:
-                error_result = TransliterateResponse(success=True, suggestions=local_suggestions)
-                logging.info(
-                    "suggest_api_response request_id=%s q=%s success=True count=%d source=local_fallback_timeout",
-                    rid, q, len(local_suggestions)
-                )
-                return error_result.dict(exclude_none=True)
-        except Exception:
-            pass
-        # If local fallback also fails, return empty
-        error_result = TransliterateResponse(success=True, suggestions=[])
-        logging.info(
-            "suggest_api_response request_id=%s q=%s success=True count=0 timeout=True",
-            rid,
-            q,
-        )
-        return error_result.dict(exclude_none=True)
     except Exception as e:
-        error_msg = str(e)
-        # Check if it's a timeout error
-        if "timeout" in error_msg.lower() or "Runner request timed out" in error_msg:
-            logging.warning(f"suggest_api_runner_timeout request_id={rid} q={q} error={error_msg} - using_local_fallback")
-            # Try instant local fallback
-            try:
-                from app.services.google_transliteration import TamilTransliterator
-                local_transliterator = TamilTransliterator()
-                local_suggestions = local_transliterator.get_suggestions(q, limit)
-                if local_suggestions:
-                    error_result = TransliterateResponse(success=True, suggestions=local_suggestions)
-                    logging.info(
-                        "suggest_api_response request_id=%s q=%s success=True count=%d source=local_fallback_error",
-                        rid, q, len(local_suggestions)
-                    )
-                    return error_result.dict(exclude_none=True)
-            except Exception:
-                pass
+        # If local transliterator fails (shouldn't happen), return empty suggestions
+        logging.error(f"suggest_api_local_error request_id={rid} q={q} error={str(e)}", exc_info=True)
+        suggestions = []
+        source = "error"
+    
+    # Metrics: track latency (should be < 10ms for local transliterator)
+    request_latency_ms = (time.perf_counter() - request_start) * 1000
+    if mode not in _suggest_latency_buckets:
+        _suggest_latency_buckets[mode] = []
+    _suggest_latency_buckets[mode].append(request_latency_ms)
+    if len(_suggest_latency_buckets[mode]) > 1000:
+        _suggest_latency_buckets[mode] = _suggest_latency_buckets[mode][-1000:]
+    
+    # Set response headers
+    _no_cache_headers(response)
+    response.headers["X-Source"] = source
+    
+    # Log response
+    suggestion_preview = []
+    for s in suggestions[:5]:
+        if isinstance(s, dict):
+            word = s.get("word", "")
+            score = s.get("score", 0.0)
+            suggestion_preview.append(f"{word}({score:.2f})")
         else:
-            logging.error(f"suggest_api_error request_id={rid} q={q} error={error_msg}", exc_info=True)
-        _no_cache_headers(response)
-        # Return empty suggestions on error (success=True to maintain compatibility)
-        error_result = TransliterateResponse(success=True, suggestions=[])
-        logging.info(
-            "suggest_api_response request_id=%s q=%s success=True count=0 error_handled=True",
-            rid,
-            q,
-        )
-        return error_result.dict(exclude_none=True)
+            suggestion_preview.append(str(s)[:20])
+    
+    logging.info(
+        "suggest_api_response request_id=%s q=%s mode=%s source=%s count=%d latency_ms=%.1f suggestions=%s",
+        rid,
+        q,
+        mode,
+        source,
+        len(suggestions),
+        request_latency_ms,
+        suggestion_preview,
+    )
+    
+    # Always return success=True with suggestions (even if empty) to maintain compatibility
+    response_obj = TransliterateResponse(
+        success=True,
+        suggestions=suggestions if suggestions else [],
+        meta=None
+    )
+    # Convert to dict and remove None fields
+    response_dict = response_obj.dict(exclude_none=True)
+    return response_dict
 
 
 @router.get("/transliterate/suggest", response_model=TransliterateResponse)
