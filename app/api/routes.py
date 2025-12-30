@@ -135,53 +135,90 @@ async def _transliterate_suggest_impl(
         cursor = len(prev) if prev else None
     
     try:
-        # Try Google API first for better quality suggestions
+        # Try Google API first for better quality suggestions (with shorter timeout)
         google_result = await get_transliteration_suggestions(
             text=q,
             limit=limit,
             mode=mode,
             use_google=True,
             use_cache=True,
-            timeout=2.0
+            timeout=1.5  # Reduced timeout to fail fast
         )
         
         suggestions = google_result.get("suggestions", [])
         source = google_result.get("source", "unknown")
         
-        # If Google didn't return good results, fall back to existing engine
-        if not suggestions or len(suggestions) == 0 or source == "fallback":
-            logging.debug(f"suggest_api_fallback request_id={rid} q={q} google_source={source} falling_back_to_engine")
+        # If Google didn't return good results, try local fallback first (fast, no external calls)
+        if not suggestions or len(suggestions) == 0:
+            logging.debug(f"suggest_api_fallback request_id={rid} q={q} google_source={source} trying_local_fallback")
             
-            # Initialize engine (singleton pattern - could be cached)
-            engine = SuggestionEngine()
-            
-            # Build request
-            suggest_request = SuggestionRequest(
-                q=q,
-                limit=limit,
-                mode=mode,
-                context=context,
-                cursor=cursor,
-                client_id=getattr(request.state, "client_id", None),
-            )
-            
-            # Generate suggestions from existing engine
-            result = await engine.suggest(suggest_request, rid)
-            
-            if result.success and result.suggestions:
-                suggestions = result.suggestions
-                source = "engine"
+            # Use local fallback transliterator (no external API calls, instant, no timeouts)
+            try:
+                from app.services.google_transliteration import TamilTransliterator
+                local_transliterator = TamilTransliterator()
+                local_suggestions = local_transliterator.get_suggestions(q, limit)
                 
-                # Metrics: track cache hits and runner errors
-                if result.meta:
-                    cache_hits = result.meta.get("cache_hits", {})
-                    if cache_hits.get("core", False):
-                        _suggest_cache_hit_total["core"] += 1
-                    if cache_hits.get("final", False):
-                        _suggest_cache_hit_total["final"] += 1
-                    if result.meta.get("runner_error", False):
-                        global _suggest_runner_errors_total
-                        _suggest_runner_errors_total += 1
+                if local_suggestions and len(local_suggestions) > 0:
+                    suggestions = local_suggestions
+                    source = "local_fallback"
+                    logging.debug(f"suggest_api_local_success request_id={rid} q={q} count={len(suggestions)}")
+            except Exception as local_error:
+                logging.debug(f"suggest_api_local_error request_id={rid} q={q} error={local_error}")
+                # Continue to engine fallback
+            
+            # Only try engine if local fallback didn't work (with strict timeout protection)
+            if not suggestions or len(suggestions) == 0:
+                logging.debug(f"suggest_api_engine_fallback request_id={rid} q={q} trying_engine")
+                try:
+                    # Initialize engine (singleton pattern - could be cached)
+                    engine = SuggestionEngine()
+                    
+                    # Build request
+                    suggest_request = SuggestionRequest(
+                        q=q,
+                        limit=limit,
+                        mode=mode,
+                        context=context,
+                        cursor=cursor,
+                        client_id=getattr(request.state, "client_id", None),
+                    )
+                    
+                    # Generate suggestions from existing engine with strict timeout protection
+                    # Use shorter timeout to fail fast and avoid "Runner request timed out" errors
+                    result = await asyncio.wait_for(
+                        engine.suggest(suggest_request, rid),
+                        timeout=1.5  # Reduced to 1.5 seconds to fail fast
+                    )
+                    
+                    if result.success and result.suggestions:
+                        suggestions = result.suggestions
+                        source = "engine"
+                        
+                        # Metrics: track cache hits and runner errors
+                        if result.meta:
+                            cache_hits = result.meta.get("cache_hits", {})
+                            if cache_hits.get("core", False):
+                                _suggest_cache_hit_total["core"] += 1
+                            if cache_hits.get("final", False):
+                                _suggest_cache_hit_total["final"] += 1
+                            if result.meta.get("runner_error", False):
+                                global _suggest_runner_errors_total
+                                _suggest_runner_errors_total += 1
+                except asyncio.TimeoutError:
+                    logging.warning(f"suggest_api_engine_timeout request_id={rid} q={q} engine_timed_out - using_empty")
+                    # Return empty suggestions - local fallback already tried
+                    suggestions = []
+                    source = "timeout"
+                except Exception as engine_error:
+                    error_msg = str(engine_error)
+                    # Check if it's a runner timeout error
+                    if "timeout" in error_msg.lower() or "Runner request timed out" in error_msg:
+                        logging.warning(f"suggest_api_runner_timeout request_id={rid} q={q} runner_timeout - using_empty")
+                    else:
+                        logging.error(f"suggest_api_engine_error request_id={rid} q={q} error={engine_error}")
+                    # Return empty suggestions - local fallback already tried
+                    suggestions = []
+                    source = "error"
         else:
             # Google provided suggestions - log success
             logging.debug(f"suggest_api_google_success request_id={rid} q={q} source={source} count={len(suggestions)}")
@@ -235,17 +272,29 @@ async def _transliterate_suggest_impl(
         
     except HTTPException:
         raise
-    except Exception as e:
-        logging.error(f"suggest_api_error request_id={rid} q={q} error={str(e)}", exc_info=True)
+    except asyncio.TimeoutError:
+        logging.warning(f"suggest_api_timeout request_id={rid} q={q} overall_timeout")
         _no_cache_headers(response)
-        # Return empty suggestions on error rather than crashing
-        error_result = TransliterateResponse(success=False, suggestions=[])
+        # Return empty suggestions on timeout (success=True to maintain compatibility)
+        error_result = TransliterateResponse(success=True, suggestions=[])
         logging.info(
-            "suggest_api_response request_id=%s q=%s success=False count=0",
+            "suggest_api_response request_id=%s q=%s success=True count=0 timeout=True",
             rid,
             q,
         )
-        return error_result
+        return error_result.dict(exclude_none=True)
+    except Exception as e:
+        logging.error(f"suggest_api_error request_id={rid} q={q} error={str(e)}", exc_info=True)
+        _no_cache_headers(response)
+        # Return empty suggestions on error (success=True to maintain compatibility)
+        # This prevents frontend from breaking
+        error_result = TransliterateResponse(success=True, suggestions=[])
+        logging.info(
+            "suggest_api_response request_id=%s q=%s success=True count=0 error_handled=True",
+            rid,
+            q,
+        )
+        return error_result.dict(exclude_none=True)
 
 
 @router.get("/transliterate/suggest", response_model=TransliterateResponse)

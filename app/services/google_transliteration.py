@@ -301,21 +301,25 @@ async def get_transliteration_suggestions(
     source = "fallback"
     
     try:
-        # Try Google API first
+        # Try Google API first (with timeout protection)
         if use_google:
             try:
                 google_suggestions = await asyncio.wait_for(
                     _google_client.get_suggestions(clean_text, limit), timeout=timeout
                 )
-                if google_suggestions:
+                if google_suggestions and len(google_suggestions) > 0:
                     suggestions = google_suggestions
                     source = "google"
                     _transliteration_cache._stats["google_calls"] += 1
+            except asyncio.TimeoutError:
+                logger.debug(f"Google API timeout for: {clean_text}")
+                # Continue to fallback
             except Exception as e:
-                logger.debug(f"Google error: {e}")
+                logger.debug(f"Google API error for {clean_text}: {e}")
+                # Continue to fallback
         
-        # Fallback to local
-        if not suggestions:
+        # Fallback to local (always available, no external calls)
+        if not suggestions or len(suggestions) == 0:
             suggestions = _fallback_transliterator.get_suggestions(clean_text, limit)
             source = "fallback"
             _transliteration_cache._stats["fallback_calls"] += 1
