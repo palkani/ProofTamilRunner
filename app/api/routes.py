@@ -135,15 +135,32 @@ async def _transliterate_suggest_impl(
         cursor = len(prev) if prev else None
     
     try:
-        # Try Google API first for better quality suggestions (with shorter timeout)
-        google_result = await get_transliteration_suggestions(
-            text=q,
-            limit=limit,
-            mode=mode,
-            use_google=True,
-            use_cache=True,
-            timeout=1.0  # Very short timeout to fail fast
-        )
+        # Try Google API first with very short timeout, then instant local fallback
+        # Use asyncio.wait_for to ensure we never wait more than 0.8 seconds total
+        try:
+            google_result = await asyncio.wait_for(
+                get_transliteration_suggestions(
+                    text=q,
+                    limit=limit,
+                    mode=mode,
+                    use_google=True,
+                    use_cache=True,
+                    timeout=0.5  # Very short timeout for Google API
+                ),
+                timeout=0.8  # Total timeout for entire operation
+            )
+        except asyncio.TimeoutError:
+            logging.warning(f"suggest_api_google_timeout request_id={rid} q={q} - using_local_fallback")
+            # Immediately use local fallback (instant, no external calls)
+            from app.services.google_transliteration import TamilTransliterator
+            local_transliterator = TamilTransliterator()
+            local_suggestions = local_transliterator.get_suggestions(q, limit)
+            google_result = {
+                "suggestions": local_suggestions if local_suggestions else [],
+                "source": "local_fallback_timeout",
+                "cached": False,
+                "ms": 0
+            }
         
         suggestions = google_result.get("suggestions", [])
         source = google_result.get("source", "unknown")
@@ -230,9 +247,23 @@ async def _transliterate_suggest_impl(
     except HTTPException:
         raise
     except asyncio.TimeoutError:
-        logging.warning(f"suggest_api_timeout request_id={rid} q={q} overall_timeout")
+        logging.warning(f"suggest_api_timeout request_id={rid} q={q} overall_timeout - using_local_fallback")
         _no_cache_headers(response)
-        # Return empty suggestions on timeout (success=True to maintain compatibility)
+        # On timeout, try instant local fallback (no external calls, no timeouts)
+        try:
+            from app.services.google_transliteration import TamilTransliterator
+            local_transliterator = TamilTransliterator()
+            local_suggestions = local_transliterator.get_suggestions(q, limit)
+            if local_suggestions:
+                error_result = TransliterateResponse(success=True, suggestions=local_suggestions)
+                logging.info(
+                    "suggest_api_response request_id=%s q=%s success=True count=%d source=local_fallback_timeout",
+                    rid, q, len(local_suggestions)
+                )
+                return error_result.dict(exclude_none=True)
+        except Exception:
+            pass
+        # If local fallback also fails, return empty
         error_result = TransliterateResponse(success=True, suggestions=[])
         logging.info(
             "suggest_api_response request_id=%s q=%s success=True count=0 timeout=True",
@@ -241,10 +272,28 @@ async def _transliterate_suggest_impl(
         )
         return error_result.dict(exclude_none=True)
     except Exception as e:
-        logging.error(f"suggest_api_error request_id={rid} q={q} error={str(e)}", exc_info=True)
+        error_msg = str(e)
+        # Check if it's a timeout error
+        if "timeout" in error_msg.lower() or "Runner request timed out" in error_msg:
+            logging.warning(f"suggest_api_runner_timeout request_id={rid} q={q} error={error_msg} - using_local_fallback")
+            # Try instant local fallback
+            try:
+                from app.services.google_transliteration import TamilTransliterator
+                local_transliterator = TamilTransliterator()
+                local_suggestions = local_transliterator.get_suggestions(q, limit)
+                if local_suggestions:
+                    error_result = TransliterateResponse(success=True, suggestions=local_suggestions)
+                    logging.info(
+                        "suggest_api_response request_id=%s q=%s success=True count=%d source=local_fallback_error",
+                        rid, q, len(local_suggestions)
+                    )
+                    return error_result.dict(exclude_none=True)
+            except Exception:
+                pass
+        else:
+            logging.error(f"suggest_api_error request_id={rid} q={q} error={error_msg}", exc_info=True)
         _no_cache_headers(response)
         # Return empty suggestions on error (success=True to maintain compatibility)
-        # This prevents frontend from breaking
         error_result = TransliterateResponse(success=True, suggestions=[])
         logging.info(
             "suggest_api_response request_id=%s q=%s success=True count=0 error_handled=True",
