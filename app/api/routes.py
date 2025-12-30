@@ -1,9 +1,14 @@
 import logging
 import time
+import asyncio
 from typing import Optional, Dict
 from fastapi import APIRouter, Request, Response, Query
 from app.api.schemas import TransliterateRequest, TransliterateResponse
 from app.services.transliteration import TransliterationService
+from app.services.google_transliteration import (
+    get_transliteration_suggestions,
+    get_cache_stats
+)
 from app.core.config import settings
 
 router = APIRouter()
@@ -27,6 +32,7 @@ def _no_cache_headers(resp: Response):
 @router.get("/health")
 async def health():
     cache_stats = service.cache.stats() if service.cache else {"size": 0, "hits": 0, "misses": 0}
+    google_cache_stats = get_cache_stats()
     base_present = bool(settings.TRANSLITERATOR_BASE_URL)
     return {
         "ok": True,
@@ -35,6 +41,17 @@ async def health():
         "cache_size": cache_stats["size"],
         "cache_hits": cache_stats["hits"],
         "cache_misses": cache_stats["misses"],
+        "google_cache": google_cache_stats,
+    }
+
+
+@router.get("/transliterate/health")
+async def transliteration_health():
+    """Health check and cache stats for transliteration service."""
+    google_cache_stats = get_cache_stats()
+    return {
+        "status": "healthy",
+        "cache": google_cache_stats
     }
 
 
@@ -118,37 +135,56 @@ async def _transliterate_suggest_impl(
         cursor = len(prev) if prev else None
     
     try:
-        # Initialize engine (singleton pattern - could be cached)
-        engine = SuggestionEngine()
-        
-        # Build request
-        suggest_request = SuggestionRequest(
-            q=q,
+        # Try Google API first for better quality suggestions
+        google_result = await get_transliteration_suggestions(
+            text=q,
             limit=limit,
             mode=mode,
-            context=context,
-            cursor=cursor,
-            client_id=getattr(request.state, "client_id", None),
+            use_google=True,
+            use_cache=True,
+            timeout=2.0
         )
         
-        # Generate suggestions
-        result = await engine.suggest(suggest_request, rid)
+        suggestions = google_result.get("suggestions", [])
+        source = google_result.get("source", "unknown")
         
-        if not result.success:
-            if result.error:
-                raise HTTPException(status_code=400, detail=result.error.get("message", "Invalid request"))
-            raise HTTPException(status_code=500, detail="Internal error")
-        
-        # Metrics: track cache hits and runner errors
-        if result.meta:
-            cache_hits = result.meta.get("cache_hits", {})
-            if cache_hits.get("core", False):
-                _suggest_cache_hit_total["core"] += 1
-            if cache_hits.get("final", False):
-                _suggest_cache_hit_total["final"] += 1
-            if result.meta.get("runner_error", False):
-                global _suggest_runner_errors_total
-                _suggest_runner_errors_total += 1
+        # If Google didn't return good results, fall back to existing engine
+        if not suggestions or len(suggestions) == 0 or source == "fallback":
+            logging.debug(f"suggest_api_fallback request_id={rid} q={q} google_source={source} falling_back_to_engine")
+            
+            # Initialize engine (singleton pattern - could be cached)
+            engine = SuggestionEngine()
+            
+            # Build request
+            suggest_request = SuggestionRequest(
+                q=q,
+                limit=limit,
+                mode=mode,
+                context=context,
+                cursor=cursor,
+                client_id=getattr(request.state, "client_id", None),
+            )
+            
+            # Generate suggestions from existing engine
+            result = await engine.suggest(suggest_request, rid)
+            
+            if result.success and result.suggestions:
+                suggestions = result.suggestions
+                source = "engine"
+                
+                # Metrics: track cache hits and runner errors
+                if result.meta:
+                    cache_hits = result.meta.get("cache_hits", {})
+                    if cache_hits.get("core", False):
+                        _suggest_cache_hit_total["core"] += 1
+                    if cache_hits.get("final", False):
+                        _suggest_cache_hit_total["final"] += 1
+                    if result.meta.get("runner_error", False):
+                        global _suggest_runner_errors_total
+                        _suggest_runner_errors_total += 1
+        else:
+            # Google provided suggestions - log success
+            logging.debug(f"suggest_api_google_success request_id={rid} q={q} source={source} count={len(suggestions)}")
         
         # Metrics: track latency
         request_latency_ms = (time.perf_counter() - request_start) * 1000
@@ -161,22 +197,11 @@ async def _transliterate_suggest_impl(
         
         # Set response headers
         _no_cache_headers(response)
-        if result.meta:
-            if "algorithm_version" in result.meta:
-                response.headers["X-Algorithm-Version"] = result.meta["algorithm_version"]
-            if "layers_used" in result.meta:
-                response.headers["X-Layers-Used"] = ",".join(result.meta["layers_used"])
-            if "cache_hits" in result.meta:
-                cache_hits = result.meta["cache_hits"]
-                response.headers["X-Cache-Hit-Core"] = str(cache_hits.get("core", False)).lower()
-                response.headers["X-Cache-Hit-Final"] = str(cache_hits.get("final", False)).lower()
-            if "total_time_ms" in result.meta:
-                response.headers["X-Latency-Ms"] = str(int(result.meta["total_time_ms"]))
-            if result.meta.get("runner_error", False):
-                response.headers["X-Runner-Error"] = "true"
-        
-        # Convert to response format (backwards compatible)
-        suggestions = result.suggestions
+        response.headers["X-Source"] = source
+        if google_result.get("cached"):
+            response.headers["X-Cache-Hit"] = "true"
+        if "ms" in google_result:
+            response.headers["X-Latency-Ms"] = str(int(google_result["ms"]))
         
         # Log response
         suggestion_preview = []
@@ -189,24 +214,23 @@ async def _transliterate_suggest_impl(
                 suggestion_preview.append(str(s)[:20])
         
         logging.info(
-            "suggest_api_response request_id=%s q=%s mode=%s success=%s count=%d suggestions=%s meta=%s",
+            "suggest_api_response request_id=%s q=%s mode=%s source=%s count=%d suggestions=%s",
             rid,
             q,
             mode,
-            result.success,
+            source,
             len(suggestions),
             suggestion_preview,
-            result.meta,
         )
         
-        # Return response without meta field (exclude None fields)
-        response = TransliterateResponse(
+        # Return response without meta field (exclude None fields) - 100% backward compatible
+        response_obj = TransliterateResponse(
             success=True,
             suggestions=suggestions,
             meta=None
         )
         # Convert to dict and remove None fields
-        response_dict = response.dict(exclude_none=True)
+        response_dict = response_obj.dict(exclude_none=True)
         return response_dict
         
     except HTTPException:
