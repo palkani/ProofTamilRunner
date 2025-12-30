@@ -142,13 +142,14 @@ async def _transliterate_suggest_impl(
             mode=mode,
             use_google=True,
             use_cache=True,
-            timeout=1.5  # Reduced timeout to fail fast
+            timeout=1.0  # Very short timeout to fail fast
         )
         
         suggestions = google_result.get("suggestions", [])
         source = google_result.get("source", "unknown")
         
         # If Google didn't return good results, try local fallback first (fast, no external calls)
+        # Local fallback is instant and never times out
         if not suggestions or len(suggestions) == 0:
             logging.debug(f"suggest_api_fallback request_id={rid} q={q} google_source={source} trying_local_fallback")
             
@@ -166,59 +167,14 @@ async def _transliterate_suggest_impl(
                 logging.debug(f"suggest_api_local_error request_id={rid} q={q} error={local_error}")
                 # Continue to engine fallback
             
-            # Only try engine if local fallback didn't work (with strict timeout protection)
+            # Skip engine entirely - it's causing timeout errors
+            # Local fallback should be sufficient for most cases
+            # Only use engine if explicitly needed (commented out for now)
             if not suggestions or len(suggestions) == 0:
-                logging.debug(f"suggest_api_engine_fallback request_id={rid} q={q} trying_engine")
-                try:
-                    # Initialize engine (singleton pattern - could be cached)
-                    engine = SuggestionEngine()
-                    
-                    # Build request
-                    suggest_request = SuggestionRequest(
-                        q=q,
-                        limit=limit,
-                        mode=mode,
-                        context=context,
-                        cursor=cursor,
-                        client_id=getattr(request.state, "client_id", None),
-                    )
-                    
-                    # Generate suggestions from existing engine with strict timeout protection
-                    # Use shorter timeout to fail fast and avoid "Runner request timed out" errors
-                    result = await asyncio.wait_for(
-                        engine.suggest(suggest_request, rid),
-                        timeout=1.5  # Reduced to 1.5 seconds to fail fast
-                    )
-                    
-                    if result.success and result.suggestions:
-                        suggestions = result.suggestions
-                        source = "engine"
-                        
-                        # Metrics: track cache hits and runner errors
-                        if result.meta:
-                            cache_hits = result.meta.get("cache_hits", {})
-                            if cache_hits.get("core", False):
-                                _suggest_cache_hit_total["core"] += 1
-                            if cache_hits.get("final", False):
-                                _suggest_cache_hit_total["final"] += 1
-                            if result.meta.get("runner_error", False):
-                                global _suggest_runner_errors_total
-                                _suggest_runner_errors_total += 1
-                except asyncio.TimeoutError:
-                    logging.warning(f"suggest_api_engine_timeout request_id={rid} q={q} engine_timed_out - using_empty")
-                    # Return empty suggestions - local fallback already tried
-                    suggestions = []
-                    source = "timeout"
-                except Exception as engine_error:
-                    error_msg = str(engine_error)
-                    # Check if it's a runner timeout error
-                    if "timeout" in error_msg.lower() or "Runner request timed out" in error_msg:
-                        logging.warning(f"suggest_api_runner_timeout request_id={rid} q={q} runner_timeout - using_empty")
-                    else:
-                        logging.error(f"suggest_api_engine_error request_id={rid} q={q} error={engine_error}")
-                    # Return empty suggestions - local fallback already tried
-                    suggestions = []
-                    source = "error"
+                logging.debug(f"suggest_api_no_suggestions request_id={rid} q={q} google_source={source} local_failed - returning_empty")
+                # Return empty suggestions rather than trying engine (which times out)
+                suggestions = []
+                source = "no_suggestions"
         else:
             # Google provided suggestions - log success
             logging.debug(f"suggest_api_google_success request_id={rid} q={q} source={source} count={len(suggestions)}")
@@ -260,10 +216,11 @@ async def _transliterate_suggest_impl(
             suggestion_preview,
         )
         
-        # Return response without meta field (exclude None fields) - 100% backward compatible
+        # Always return success=True with suggestions (even if empty) to maintain compatibility
+        # Never return error responses - frontend expects {success: true, suggestions: [...]}
         response_obj = TransliterateResponse(
             success=True,
-            suggestions=suggestions,
+            suggestions=suggestions if suggestions else [],
             meta=None
         )
         # Convert to dict and remove None fields
