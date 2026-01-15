@@ -1,11 +1,10 @@
 import logging
 import time
-import asyncio
 from typing import Optional, Dict
 from fastapi import APIRouter, Request, Response, Query
 from app.api.schemas import TransliterateRequest, TransliterateResponse
 from app.services.transliteration import TransliterationService
-from app.services.google_transliteration import get_cache_stats
+from app.services.google_transliteration import get_cache_stats, TamilTransliterator
 from app.core.config import settings
 
 router = APIRouter()
@@ -123,10 +122,53 @@ async def _transliterate_suggest_impl(
     # Metrics: increment request counter
     _suggest_requests_total[mode] = _suggest_requests_total.get(mode, 0) + 1
     
-    # Use local IME variant generation (no external dependencies, richer candidate list)
+    # Use local IME variant generation (no external dependencies, richer candidate list),
+    # but preserve canonical/common-word correctness for high-signal tokens like "tamil".
     try:
-        suggestions = await service.generate_ime_suggestions(q, limit=limit, mode=mode)
+        from app.services.canonical_map import get_canonical
+        from app.services.tamil_linguistics import normalize_roman_input
+
+        norm_q = normalize_roman_input(q)
+
+        suggestions = []
         source = "local-ime"
+
+        # 1) Canonical override (ensures "tamil" -> "தமிழ்" always appears)
+        canonical_word, is_canonical = get_canonical(norm_q)
+        if is_canonical and canonical_word:
+            suggestions.append({"word": canonical_word, "score": 1.0})
+            source = "canonical+local-ime"
+
+        # 2) Local common-word transliterator (good related words)
+        try:
+            local = TamilTransliterator().get_suggestions(norm_q, limit)
+            if local:
+                suggestions.extend(local)
+        except Exception:
+            # non-fatal
+            pass
+
+        # 3) IME variant generation (broad coverage)
+        ime_suggestions = await service.generate_ime_suggestions(norm_q, limit=limit, mode=mode)
+        if ime_suggestions:
+            suggestions.extend(ime_suggestions)
+
+        # Deduplicate and sort by score desc
+        dedup = {}
+        for s in suggestions:
+            if not isinstance(s, dict):
+                continue
+            w = (s.get("word") or "").strip()
+            if not w:
+                continue
+            try:
+                score = float(s.get("score", 0.0))
+            except Exception:
+                score = 0.0
+            if w not in dedup or score > float(dedup[w].get("score", 0.0)):
+                dedup[w] = {"word": w, "score": round(score, 2)}
+        suggestions = sorted(dedup.values(), key=lambda x: x.get("score", 0.0), reverse=True)[:limit]
+
     except Exception as e:
         logging.error(f"suggest_api_error request_id={rid} q={q} error={str(e)}", exc_info=True)
         suggestions = []
