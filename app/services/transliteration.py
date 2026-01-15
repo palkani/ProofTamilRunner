@@ -275,7 +275,7 @@ class TransliterationService:
 
         # IME-style generation with Aksharamukha (fallback or supplement)
         if not used_runner or not suggestions:
-            ime_suggestions = await self.generate_ime_suggestions(text, limit)
+            ime_suggestions = await self.generate_ime_suggestions(text, limit, mode=mode)
             # PART 3: Filter IME suggestions to remove invalid Tamil forms
             filtered_ime = filter_tamil_suggestions(ime_suggestions, text)
             if filtered_ime:
@@ -319,7 +319,7 @@ class TransliterationService:
             self.response_cache.set(key, final)
         return final, used_runner, cache_status
 
-    async def generate_ime_suggestions(self, text: str, limit: int) -> List[dict]:
+    async def generate_ime_suggestions(self, text: str, limit: int, mode: str = "spoken") -> List[dict]:
         base_variants = _latin_variants(text, max_variants=64)
         tamil_set: Set[str] = set()
         scored: List[dict] = []
@@ -329,7 +329,7 @@ class TransliterationService:
             cached = self.variant_cache.get(ck)
             if cached:
                 return cached
-            outs = await self.adapter.transliterate(token, "spoken")
+            outs = await self.adapter.transliterate(token, mode or "spoken")
             self.variant_cache.set(ck, outs)
             return outs
 
