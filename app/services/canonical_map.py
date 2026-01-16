@@ -13,6 +13,8 @@ CANONICAL_MAP = {
     "tamizh": "தமிழ்",
     "tamiz": "தமிழ்",
     "vanakkam": "வணக்கம்",
+    "murugan": "முருகன்",
+    "muruga": "முருகா",
     "naan": "நான்",
     "enakku": "எனக்கு",
     "mu": "மு",
