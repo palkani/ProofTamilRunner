@@ -50,9 +50,19 @@ def filter_tamil_suggestions(suggestions: List[dict], token: str) -> List[dict]:
     if not suggestions:
         return []
 
+    token_len = len(token or "")
+
     # For short tokens (1-2 chars), limit to 3 chars max
     # For longer tokens, allow up to 6 chars
-    max_len = 3 if len(token) <= 2 else 6
+    max_len = 3 if token_len <= 2 else 6
+
+    # For longer Roman inputs, avoid ultra-short Tamil fragments (common source of junk suggestions)
+    # Examples: "enathu" should not return "எந"/"என"
+    min_len = 1
+    if token_len >= 7:
+        min_len = 4
+    elif token_len >= 5:
+        min_len = 3
 
     filtered = []
     for s in suggestions:
@@ -70,6 +80,15 @@ def filter_tamil_suggestions(suggestions: List[dict], token: str) -> List[dict]:
 
         # Reject too-long expansions for short input
         if len(w) > max_len:
+            continue
+
+        # Reject too-short fragments for long input
+        if len(w) < min_len:
+            continue
+
+        # Prefer dictionary-backed words for long inputs when the candidate is short.
+        # Keep longer candidates even if not in frequency list (to not kill rare proper nouns).
+        if token_len >= 5 and len(w) <= 3 and not has_freq(w):
             continue
 
         filtered.append(s)
@@ -150,17 +169,6 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
-def _phonetic_score(src: str, tgt: str) -> float:
-    a = _normalize(src)
-    b = _normalize(tgt)
-    if not a or not b:
-        return 0.5
-    dist = _levenshtein(a, b)
-    max_len = max(len(a), len(b)) or 1
-    sim = 1 - dist / max_len
-    return max(0.0, min(1.0, sim))
-
-
 def _length_score(word: str) -> float:
     l = len(word)
     if l <= 1:
@@ -181,11 +189,24 @@ def _form_score(word: str) -> float:
 
 
 def _score_candidate(word: str, src_variant: str, tier: str) -> float:
+    """
+    Score candidate in 0..1.
+
+    NOTE: Do NOT Levenshtein-compare Roman input to Tamil candidate directly (different scripts).
+    Instead, rely on frequency + form + length, and apply a small tier bias so "base" wins over
+    aggressive variants/suffix expansions.
+    """
     freq = freq_score(word)
-    phon = _phonetic_score(src_variant, word)
     form = _form_score(word)
     length = _length_score(word)
-    final = 0.45 * freq + 0.30 * phon + 0.15 * form + 0.10 * length
+
+    tier_bias = {
+        "base": 1.00,
+        "variant": 0.95,
+        "suffix": 0.90,
+    }.get(tier or "", 0.92)
+
+    final = tier_bias * (0.70 * freq + 0.15 * form + 0.15 * length)
     return round(min(1.0, max(0.0, final)), 2)
 
 
@@ -308,7 +329,7 @@ class TransliterationService:
             filtered.append({"word": w, "score": s.get("score", 0)})
 
         final = sorted(filtered, key=lambda x: x["score"], reverse=True)
-        final = final[: max(8, min(limit or 8, 10))]
+        final = final[: max(1, min(limit or 8, 10))]
 
         assert all("word" in s and "score" in s for s in final)
 
@@ -364,7 +385,7 @@ class TransliterationService:
             if key not in dedup or item["score"] > dedup[key]["score"]:
                 dedup[key] = item
         suggestions = sorted(dedup.values(), key=lambda x: x["score"], reverse=True)
-        suggestions = suggestions[: max(8, min(limit or 8, 10))]
+        suggestions = suggestions[: max(1, min(limit or 8, 10))]
 
         if DEBUG:
             logging.info(

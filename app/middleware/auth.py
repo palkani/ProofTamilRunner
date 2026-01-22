@@ -12,8 +12,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.rate_limiter = RateLimiter(max_per_minute=settings.RATE_LIMIT_PER_MIN)
 
     async def dispatch(self, request, call_next):
-        # allow health without auth
-        if request.url.path == "/health":
+        # Allow health + IME suggest endpoints without auth (public, browser-facing).
+        # These must be fast and never 401 for end users.
+        public_paths = {
+            "/health",
+            "/transliterate/health",
+            "/transliterate/suggest",
+            "/ime/suggest",
+            "/api/v1/transliterate/health",
+            "/api/v1/transliterate/suggest",
+            "/api/v1/ime/suggest",
+        }
+        if request.url.path in public_paths:
             return await call_next(request)
 
         client_id = request.headers.get("X-Client-Id")

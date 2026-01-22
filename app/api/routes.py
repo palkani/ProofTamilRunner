@@ -133,25 +133,39 @@ async def _transliterate_suggest_impl(
         suggestions = []
         source = "local-ime"
 
-        # 1) Canonical override (ensures "tamil" -> "தமிழ்" always appears)
+        # 1) Canonical override (ensures common tokens are ALWAYS correct)
         canonical_word, is_canonical = get_canonical(norm_q)
         if is_canonical and canonical_word:
-            suggestions.append({"word": canonical_word, "score": 1.0})
-            source = "canonical+local-ime"
+            # For some high-signal tokens, return ONLY the canonical word to avoid confusing junk.
+            strict_only = {
+                "tamil", "thamizh", "thamiz", "tamizh", "tamiz",
+                "enna",
+                "namma",
+                "enathu", "enadu", "enadhu",
+                "therkku", "therku", "therkk",
+            }
+            if norm_q in strict_only:
+                suggestions = [{"word": canonical_word, "score": 1.0}]
+                source = "canonical"
+            else:
+                suggestions.append({"word": canonical_word, "score": 1.0})
+                source = "canonical+local-ime"
 
         # 2) Local common-word transliterator (good related words)
-        try:
-            local = TamilTransliterator().get_suggestions(norm_q, limit)
-            if local:
-                suggestions.extend(local)
-        except Exception:
-            # non-fatal
-            pass
+        if source != "canonical":
+            try:
+                local = TamilTransliterator().get_suggestions(norm_q, limit)
+                if local:
+                    suggestions.extend(local)
+            except Exception:
+                # non-fatal
+                pass
 
         # 3) IME variant generation (broad coverage)
-        ime_suggestions = await service.generate_ime_suggestions(norm_q, limit=limit, mode=mode)
-        if ime_suggestions:
-            suggestions.extend(ime_suggestions)
+        if source != "canonical":
+            ime_suggestions = await service.generate_ime_suggestions(norm_q, limit=limit, mode=mode)
+            if ime_suggestions:
+                suggestions.extend(ime_suggestions)
 
         # Deduplicate and sort by score desc
         dedup = {}

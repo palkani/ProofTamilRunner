@@ -33,7 +33,7 @@ end
 # Unset irrelevant variables.
 deactivate nondestructive
 
-set -gx VIRTUAL_ENV "/Users/palkanirajendran/Documents/Palkani/SAAS_IDEAS/services/ProofTamilRunner/.venv"
+set -gx VIRTUAL_ENV "/Users/palkanirajendran/Documents/Palkani/SAAS_IDEAS/ProofTamilRunner/.venv"
 
 set -gx _OLD_VIRTUAL_PATH $PATH
 set -gx PATH "$VIRTUAL_ENV/bin" $PATH

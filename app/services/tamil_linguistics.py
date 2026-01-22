@@ -100,6 +100,8 @@ def is_structurally_invalid_tamil(word: str) -> bool:
     
     Hard rejections:
     - Contains consecutive dependent vowel signs
+    - Contains dependent vowel followed by independent vowel (e.g., "மு" + "உ" -> "முஉ")
+    - Contains independent vowel followed by dependent vowel (e.g., "அ" + "ா")
     - Dependent vowel sign without base consonant (starts with vowel sign)
     - Contains Latin/digits (leakage)
     - Contains repeated pulli (்்) - already handled in normalize_unicode but check here too
@@ -117,6 +119,7 @@ def is_structurally_invalid_tamil(word: str) -> bool:
         return True
 
     # Check character-by-character structural rules
+    independent_vowels = set("அஆஇஈஉஊஎஏஐஒஓஔ")
     for i, char in enumerate(word):
         # Dependent vowel cannot start a word (no base consonant)
         if i == 0 and char in DEPENDENT_VOWELS:
@@ -127,6 +130,14 @@ def is_structurally_invalid_tamil(word: str) -> bool:
 
             # Consecutive dependent vowels (structurally impossible)
             if prev in DEPENDENT_VOWELS and char in DEPENDENT_VOWELS:
+                return True
+
+            # Dependent vowel followed by independent vowel is invalid (e.g., "மு" + "உ" -> "முஉ")
+            if prev in DEPENDENT_VOWELS and char in independent_vowels:
+                return True
+
+            # Independent vowel followed by dependent vowel is invalid (e.g., "அ" + "ா")
+            if prev in independent_vowels and char in DEPENDENT_VOWELS:
                 return True
 
             # Double pulli (structurally invalid)

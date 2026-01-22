@@ -12,6 +12,16 @@ CANONICAL_MAP = {
     "thamiz": "தமிழ்",
     "tamizh": "தமிழ்",
     "tamiz": "தமிழ்",
+    # Very common function words (strict - must be correct)
+    "enna": "என்ன",
+    "namma": "நம்ம",
+    "enathu": "எனது",
+    "enadu": "எனது",
+    "enadhu": "எனது",
+    # South
+    "therkku": "தெற்கு",
+    "therku": "தெற்கு",
+    "therkk": "தெற்கு",
     "vanakkam": "வணக்கம்",
     "murugan": "முருகன்",
     "muruga": "முருகா",
