@@ -169,8 +169,15 @@ class SuggestService:
         # PART B: Minimal hard filter - only structurally invalid Tamil
         structurally_valid = []
         for cand in normalized_candidates:
-            if not is_structurally_invalid_tamil(cand):
-                structurally_valid.append(cand)
+            # For very short roman inputs, keep strict Tamil orthography rules to prevent junk
+            # (e.g., mu -> முஉ).
+            # For longer inputs (often English loanwords), Aksharamukha can emit Tamil-script
+            # forms that violate strict vowel-sequence rules; showing something is better than
+            # showing nothing, so we relax the structural gate.
+            if is_structurally_invalid_tamil(cand):
+                if input_length <= 3:
+                    continue
+            structurally_valid.append(cand)
 
         metadata["after_structural_filter"] = len(structurally_valid)
 

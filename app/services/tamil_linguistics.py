@@ -84,11 +84,17 @@ def normalize_unicode(candidate: str) -> str:
     # NFC normalization
     normalized = unicodedata.normalize("NFC", candidate)
 
+    # Aksharamukha sometimes emits non-Tamil annotation characters (e.g., ², ³).
+    # Keep only Tamil block chars + whitespace, then strip whitespace.
+    normalized = "".join(
+        ch for ch in normalized if ("\u0B80" <= ch <= "\u0BFF") or ch.isspace()
+    )
+
     # Collapse repeated pulli (multiple pulli in a row is invalid)
     normalized = re.sub(r"்{2,}", PULLI, normalized)
 
-    # Strip whitespace
-    normalized = normalized.strip()
+    # Strip whitespace and remove internal whitespace (suggest tokens should be contiguous)
+    normalized = re.sub(r"\s+", "", normalized).strip()
 
     return normalized
 
