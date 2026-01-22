@@ -1,14 +1,25 @@
 import logging
 import time
 from typing import Optional, Dict
-from fastapi import APIRouter, Request, Response, Query
+from fastapi import APIRouter, Request, Response, Query, HTTPException
 from app.api.schemas import TransliterateRequest, TransliterateResponse
 from app.services.transliteration import TransliterationService
 from app.services.google_transliteration import get_cache_stats, TamilTransliterator
+from app.services.suggest_service import SuggestService
 from app.core.config import settings
 
 router = APIRouter()
 service = TransliterationService()
+
+# Suggest service singleton (used by /transliterate/suggest)
+_suggest_service: Optional[SuggestService] = None
+
+
+def get_suggest_service() -> SuggestService:
+    global _suggest_service
+    if _suggest_service is None:
+        _suggest_service = SuggestService()
+    return _suggest_service
 
 # Metrics counters (lightweight, in-memory)
 _suggest_requests_total: Dict[str, int] = {}
@@ -237,14 +248,54 @@ async def transliterate_suggest(
     q: str,
     request: Request,
     response: Response,
-    limit: int = Query(8, ge=1, le=20),
+    # Keep manual validation so errors are stable (400) instead of FastAPI 422.
+    limit: int = 8,
     mode: str = Query("smart"),  # No pattern validation - we handle it in the function
     context: Optional[str] = Query(None, max_length=5000),
     cursor: Optional[int] = Query(None, ge=0),
     prev: Optional[str] = None,
 ):
-    """Alias for /transliterate/suggest endpoint."""
-    return await _transliterate_suggest_impl(q, request, response, limit, mode, context, cursor, prev)
+    """
+    Suggest endpoint backed by SuggestService (ranked + filtered).
+
+    Returns:
+      { success: true, suggestions: [{word, score}], meta: {...} }
+    """
+    rid = getattr(request.state, "request_id", "n/a")
+
+    # Normalize compatibility modes into SuggestService modes
+    m = (mode or "").strip().lower()
+    mode_mappings = {
+        "smart": "spoken",
+        "strict": "formal",
+        "written": "formal",
+        "char": "char",
+        "word": "spoken",
+        "spoken": "spoken",
+        "formal": "formal",
+        "academic": "academic",
+    }
+    m = mode_mappings.get(m, "spoken")
+
+    # Validate q/limit (keep error codes stable)
+    if not q or len(q) < 1 or len(q) > 40:
+        raise HTTPException(status_code=400, detail="q must be between 1 and 40 characters")
+    if limit < 1 or limit > 20:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 20")
+
+    suggestions, meta = await get_suggest_service().suggest(q, limit=limit, mode=m, prev=prev, request_id=rid)
+    # Always return success=true even if meta has error; keep UX stable.
+    response.headers["X-Algorithm-Version"] = "runner-suggest-service"
+    response.headers["X-Layers-Used"] = "SUGGEST"
+    return {
+        "success": True,
+        "suggestions": suggestions or [],
+        "meta": {
+            "algorithm_version": "runner-suggest-service",
+            "mode": m,
+            **(meta or {}),
+        },
+    }
 
 
 @router.get("/ime/suggest", response_model=TransliterateResponse)
@@ -258,5 +309,5 @@ async def ime_suggest(
     cursor: Optional[int] = Query(None, ge=0),
     prev: Optional[str] = None,
 ):
-    """IME suggest endpoint - accepts 'spoken' mode for backwards compatibility."""
-    return await _transliterate_suggest_impl(q, request, response, limit, mode, context, cursor, prev)
+    """Alias for /transliterate/suggest (kept for backward compatibility)."""
+    return await transliterate_suggest(q, request, response, limit, mode, context, cursor, prev)

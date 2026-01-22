@@ -173,8 +173,20 @@ def is_valid_tamil_word(word: str) -> bool:
     if not word:
         return False
 
+    # Must contain only Tamil block chars + whitespace (fast reject for leakage)
+    if not is_tamil_text(word):
+        return False
+
     # Check for Latin/digits
     if any(c.isascii() and c.isalnum() for c in word):
+        return False
+
+    # Dependent vowel cannot start a word
+    if word and word[0] in DEPENDENT_VOWELS:
+        return False
+
+    # Double pulli is invalid
+    if PULLI + PULLI in word:
         return False
 
     # Check for invalid vowel sequences

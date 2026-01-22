@@ -31,7 +31,39 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 # Algorithm version
-ALGORITHM_VERSION = "1.0.0"
+ALGORITHM_VERSION = "1.0.1"
+
+
+def _normalize_roman_q(q: str) -> str:
+    q = (q or "").lower().strip()
+    # keep only a-z and apostrophe (IME romanization)
+    import re
+    q = re.sub(r"[^a-z']", "", q)
+    return q
+
+
+# Canonical ranked suggestions for extremely common tokens where users expect Google-style results.
+# This is a backend quality guarantee.
+CANONICAL_RANKED = {
+    # function words
+    "enna": ["என்ன"],
+    "namma": ["நம்ம"],
+    "enathu": ["எனது"],
+    "enadu": ["எனது"],
+    "enadhu": ["எனது"],
+    # south
+    "therkku": ["தெற்கு"],
+    "therku": ["தெற்கு"],
+    "therkk": ["தெற்கு"],
+    # enpathu family (competitor-style ranking)
+    "enpathu": ["என்பது", "எண்பது", "எண்பத்து", "என்பத்து", "எண்பத"],
+    # tamil
+    "tamil": ["தமிழ்"],
+    "thamizh": ["தமிழ்"],
+    "thamiz": ["தமிழ்"],
+    "tamizh": ["தமிழ்"],
+    "tamiz": ["தமிழ்"],
+}
 
 
 class SuggestionEngine:
@@ -97,6 +129,31 @@ class SuggestionEngine:
                     suggestions=[],
                     meta={},
                     error=validation_error,
+                )
+
+            # Canonical short-circuit (ranked list). Guarantees correctness for high-signal tokens.
+            nq = _normalize_roman_q(request.q)
+            forced = CANONICAL_RANKED.get(nq)
+            if forced:
+                items: List[Candidate] = []
+                for idx, w in enumerate(forced[: request.limit]):
+                    score = max(0.55, 1.0 - (idx * 0.1))
+                    items.append(
+                        Candidate(
+                            word=w,
+                            base_score=round(score, 2) if idx > 0 else 1.0,
+                            source_layer="canonical",
+                            debug={"canonical": True, "q": nq, "rank": idx + 1},
+                        )
+                    )
+                return self._build_response(
+                    items,
+                    request,
+                    layer_timings,
+                    ["CANON"],
+                    {"core": False, "final": False},
+                    runner_error=False,
+                    total_time=time.perf_counter() - start_time,
                 )
 
             # Prepare context info
@@ -334,6 +391,18 @@ class SuggestionEngine:
     ) -> SuggestionResponse:
         """Build response with suggestions and metadata."""
         suggestions = [c.to_dict() for c in candidates]
+
+        # Normalize scores so top suggestion is 1.0 and others are scaled into 0..1.
+        if suggestions:
+            try:
+                max_score = max(float(s.get("score", 0.0) or 0.0) for s in suggestions) or 0.0
+            except Exception:
+                max_score = 0.0
+            if max_score > 0:
+                for i, s in enumerate(suggestions):
+                    raw = float(s.get("score", 0.0) or 0.0)
+                    scaled = raw / max_score
+                    s["score"] = 1.0 if i == 0 else round(max(0.0, min(1.0, scaled)), 2)
 
         # Build meta
         meta = {

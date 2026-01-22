@@ -190,9 +190,18 @@ def morphology_score(candidate: str, input_length: int) -> float:
 
 def eliminate_morphological_garbage(candidate: str, input_length: int) -> bool:
     """
-    DEPRECATED: Morphological filtering is now soft scoring only.
-    Kept for backward compatibility - always returns True (no hard rejection).
+    Hard morphology gate used by tests and as a safety net.
+
+    Rules (simple + conservative):
+    - For very short Roman inputs (<=2 chars), do not allow long Tamil outputs (>3 chars).
+    - For short inputs (<=4 chars), do not allow extremely long outputs (>8 chars).
     """
+    if not candidate:
+        return False
+    if input_length <= 2 and len(candidate) > 3:
+        return False
+    if input_length <= 4 and len(candidate) > 8:
+        return False
     return True
 
 

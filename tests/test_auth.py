@@ -11,6 +11,10 @@ def setup_app():
     # reload settings
     import app.core.config as config
     importlib.reload(config)
+    import app.core.security as security
+    importlib.reload(security)
+    import app.middleware.auth as authmw
+    importlib.reload(authmw)
     import app.main as main
     importlib.reload(main)
     return main.app

@@ -63,7 +63,8 @@ def test_suggest_endpoint_validation_limit_invalid():
 def test_suggest_endpoint_validation_mode_invalid():
     """Test validation for invalid mode."""
     response = client.get("/transliterate/suggest?q=m&mode=invalid")
-    assert response.status_code == 422  # FastAPI validation error
+    # Mode is tolerant: invalid values are normalized to spoken.
+    assert response.status_code == 200
 
 
 def test_suggest_endpoint_response_format():
@@ -94,8 +95,8 @@ def test_suggest_endpoint_meta_diagnostics():
 
     meta = data.get("meta", {})
     assert "algorithm_version" in meta
-    assert "layers_used" in meta
-    assert "cache_hits" in meta
+    # SuggestService-specific fields
+    assert "cache" in meta
 
     # Check headers
     assert "X-Algorithm-Version" in response.headers
