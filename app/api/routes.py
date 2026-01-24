@@ -138,6 +138,7 @@ async def _transliterate_suggest_impl(
     try:
         from app.services.canonical_map import get_canonical
         from app.services.tamil_linguistics import normalize_roman_input
+        from app.services.corpus_db import get_corpus
 
         norm_q = normalize_roman_input(q)
 
@@ -172,11 +173,37 @@ async def _transliterate_suggest_impl(
                 # non-fatal
                 pass
 
+        # 2.5) Corpus suggestions from Postgres (high quality for real words + alternates)
+        try:
+            corpus = get_corpus()
+            # prev is optional Tamil context; only boosts if provided
+            corpus_words = corpus.suggest_words(norm_q, limit=min(10, limit), prev_tamil=prev)
+            if corpus_words:
+                suggestions.extend([{"word": w, "score": sc} for (w, sc) in corpus_words])
+                if source == "local-ime":
+                    source = "corpus+local-ime"
+        except Exception:
+            pass
+
         # 3) IME variant generation (broad coverage)
         if source != "canonical":
             ime_suggestions = await service.generate_ime_suggestions(norm_q, limit=limit, mode=mode)
             if ime_suggestions:
                 suggestions.extend(ime_suggestions)
+
+        # 3.5) Phrase completions (if corpus has phrases starting with top word)
+        try:
+            if suggestions:
+                top_word = (suggestions[0].get("word") if isinstance(suggestions[0], dict) else "") or ""
+                top_word = str(top_word).strip()
+                if top_word:
+                    ph = get_corpus().suggest_phrases(top_word, limit=min(5, limit))
+                    if ph:
+                        suggestions.extend([{"word": w, "score": sc} for (w, sc) in ph])
+                        if source.startswith("corpus"):
+                            source = "corpus+phrases"
+        except Exception:
+            pass
 
         # Deduplicate and sort by score desc
         dedup = {}

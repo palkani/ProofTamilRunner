@@ -4,4 +4,5 @@ aksharamukha==2.1.2
 python-dotenv==1.0.1
 httpx==0.25.2
 pytest==7.4.4
+psycopg2-binary==2.9.9
 

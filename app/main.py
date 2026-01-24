@@ -9,6 +9,7 @@ from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.metrics import MetricsMiddleware
 from app.middleware.auth import AuthMiddleware
 from app.services.suggest_service import SuggestService
+from app.services.corpus_db import get_corpus
 
 
 def create_app() -> FastAPI:
@@ -57,6 +58,11 @@ async def startup_event():
                     await svc.suggest(q, limit=10, mode="spoken", request_id="warmup")
                 except Exception:
                     pass
+            # Warm corpus index (loads Postgres snapshot if configured)
+            try:
+                get_corpus().ensure_loaded()
+            except Exception:
+                pass
             logging.info("[Warmup] Completed: primed suggest cache")
         except Exception as e:
             logging.warning("[Warmup] Failed: %s", str(e))

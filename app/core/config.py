@@ -20,6 +20,12 @@ class Settings:
     CACHE_TTL_SECONDS: int = int(os.environ.get("CACHE_TTL_SECONDS", 600))
     CACHE_MAX_SIZE: int = int(os.environ.get("CACHE_MAX_SIZE", 5000))
     TRANSLITERATOR_ENABLED: bool = bool(TRANSLITERATOR_BASE_URL.strip())
+    # Optional: connect to the main Postgres DB to read tamil_words/tamil_phrases/tamil_bigrams
+    DATABASE_URL: str = os.environ.get("DATABASE_URL", "")
+    CORPUS_ENABLED: bool = os.environ.get("CORPUS_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+    CORPUS_TOP_K: int = int(os.environ.get("CORPUS_TOP_K", 50000))
+    CORPUS_PHRASE_TOP_K: int = int(os.environ.get("CORPUS_PHRASE_TOP_K", 50000))
+    CORPUS_BIGRAM_TOP_K: int = int(os.environ.get("CORPUS_BIGRAM_TOP_K", 200000))
     # Simple in-memory client registry: client_id -> hashed_key
     CLIENT_REGISTRY = {
         os.environ.get("CLIENT_ID", "demo-client"): hash_key(os.environ.get("API_KEY", "demo-key"))
