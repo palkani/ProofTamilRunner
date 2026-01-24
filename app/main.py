@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from fastapi import FastAPI
 from app.api.routes import router as api_router
 from app.core.config import settings
@@ -7,6 +8,7 @@ from app.core.logging import configure_logging
 from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.metrics import MetricsMiddleware
 from app.middleware.auth import AuthMiddleware
+from app.services.suggest_service import SuggestService
 
 
 def create_app() -> FastAPI:
@@ -38,5 +40,33 @@ async def startup_event():
     port = os.environ.get("PORT", "8080")
     print(f"🚀 ProofTamilRunner starting on port {port}")
     
-    # Warmup skipped - using local transliterator only (no caching needed, instant responses)
-    logging.info("[Warmup] Skipped - using local transliterator (instant, no cache needed)")
+    # Warmup (optional): reduces first-request latency on Cloud Run cold starts.
+    # NOTE: Real cold-start reduction still requires Cloud Run min instances, but this helps
+    # by loading Aksharamukha + priming caches.
+    warmup_enabled = os.environ.get("WARMUP_ON_STARTUP", "true").strip().lower() in ("1", "true", "yes", "on")
+    if not warmup_enabled:
+        logging.info("[Warmup] Disabled (WARMUP_ON_STARTUP=false)")
+        return
+
+    async def _warm():
+        try:
+            svc = SuggestService()
+            seeds = ["tamil", "vanakkam", "enna", "enathu", "enpathu", "nanban"]
+            for q in seeds:
+                try:
+                    await svc.suggest(q, limit=10, mode="spoken", request_id="warmup")
+                except Exception:
+                    pass
+            logging.info("[Warmup] Completed: primed suggest cache")
+        except Exception as e:
+            logging.warning("[Warmup] Failed: %s", str(e))
+
+    try:
+        asyncio.create_task(_warm())
+        logging.info("[Warmup] Scheduled")
+    except Exception:
+        # Fallback for environments without a running loop at startup
+        try:
+            asyncio.run(_warm())
+        except Exception:
+            pass

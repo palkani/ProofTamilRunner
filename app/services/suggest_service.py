@@ -92,6 +92,9 @@ class SuggestService:
         # These are returned exactly, to guarantee correctness and UX consistency.
         ranked_overrides = {
             "enpathu": ["என்பது", "எண்பது", "எண்பத்து", "என்பத்து", "எண்பத"],
+            # Google-IME-like variants for common nouns
+            # nanban -> friend (Tamil): provide common inflections and related forms
+            "nanban": ["நண்பன்", "நண்பா", "நண்பனை", "நண்பனே", "நண்பர்", "நண்பர்கள்", "நண்பனுக்கு", "நண்பனுடன்", "நண்பனிடம்", "நண்பனுடைய"],
         }
         forced = ranked_overrides.get(normalized_input)
         if forced:
