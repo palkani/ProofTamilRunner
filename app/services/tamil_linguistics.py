@@ -218,3 +218,92 @@ def ends_with_tamil_vowel(word: str) -> bool:
     last = word[-1]
     return last in TAMIL_VOWELS or last in DEPENDENT_VOWELS
 
+
+def expand_common_variants(base: str, max_variants: int = 10) -> List[str]:
+    """
+    Generate Google-IME-like "many suggestions" for a base Tamil lemma by applying
+    a small set of high-signal Tamil suffixes.
+
+    This is intentionally conservative (fast + safe) and is not a full morphology engine.
+    We rely on `is_structurally_invalid_tamil` downstream as a hard safety gate.
+    """
+    if not base:
+        return []
+
+    base = normalize_unicode(base)
+    if not base:
+        return []
+
+    out: List[str] = []
+    seen = set()
+
+    def add(w: str):
+        w = normalize_unicode(w)
+        if not w:
+            return
+        if w in seen:
+            return
+        seen.add(w)
+        out.append(w)
+
+    add(base)
+
+    # If lemma ends with a vowel sign, use "ய" joiner for common case forms (e.g., மொழி -> மொழியை).
+    if ends_with_tamil_vowel(base):
+        for suf in ["யை", "யில்", "யால்", "யுடன்", "யிடம்", "யுடைய", "கள்", "களில்", "களுடன்"]:
+            if len(out) >= max_variants:
+                break
+            add(base + suf)
+        return out[:max_variants]
+
+    # If lemma ends with pulli, we can sometimes form cases by *fusing* an initial vowel of a suffix
+    # into a dependent vowel on the final consonant (e.g., தமிழ் + இல் -> தமிழில்).
+    if base.endswith(PULLI) and len(base) >= 2:
+        last_cons = base[-2]
+
+        # Words ending in "ம்" (…ம + pulli) often require consonant doubling (…த்த…) in inflections:
+        # e.g., வணக்கம் -> வணக்கத்தை / வணக்கத்தில். We avoid generating wrong forms.
+        if last_cons == "ம":
+            return out[:max_variants]
+
+        vowel_to_dep = {
+            "அ": "",
+            "ஆ": "ா",
+            "இ": "ி",
+            "ஈ": "ீ",
+            "உ": "ு",
+            "ஊ": "ூ",
+            "எ": "ெ",
+            "ஏ": "ே",
+            "ஐ": "ை",
+            "ஒ": "ொ",
+            "ஓ": "ோ",
+            "ஔ": "ௌ",
+        }
+
+        def fuse_suffix(suffix: str) -> str:
+            if not suffix:
+                return ""
+            first = suffix[0]
+            dep = vowel_to_dep.get(first)
+            if dep is None:
+                # Not a vowel-starting suffix; simple concatenation may still be useful.
+                return base + suffix
+            # Remove pulli, attach dependent vowel sign, then append remaining suffix (excluding the first vowel)
+            return base[:-1] + dep + suffix[1:]
+
+        # High-signal suffixes where this fusion generally produces correct-looking words:
+        # - accusative: ஐ
+        # - locative: இல்
+        # - instrumental: ஆல்
+        # - with: உடன்
+        # - place/person: இடம்
+        # - possessive: உடைய
+        # - dative: உக்கு (for forms like தமிழுக்கு / நண்பனுக்கு)
+        for suf in ["ஐ", "இல்", "ஆல்", "உடன்", "இடம்", "உடைய", "உக்கு", "கள்", "களில்", "களுடன்"]:
+            if len(out) >= max_variants:
+                break
+            add(fuse_suffix(suf))
+
+    return out[:max_variants]
+

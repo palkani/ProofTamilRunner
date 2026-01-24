@@ -18,6 +18,7 @@ from app.services.tamil_linguistics import (
     normalize_unicode,
     is_structurally_invalid_tamil,
     morphology_score,
+    expand_common_variants,
 )
 from app.services.canonical_map import get_canonical
 
@@ -95,6 +96,10 @@ class SuggestService:
             # Google-IME-like variants for common nouns
             # nanban -> friend (Tamil): provide common inflections and related forms
             "nanban": ["நண்பன்", "நண்பா", "நண்பனை", "நண்பனே", "நண்பர்", "நண்பர்கள்", "நண்பனுக்கு", "நண்பனுடன்", "நண்பனிடம்", "நண்பனுடைய"],
+            # mozhi/ மொழி: Aksharamukha can sometimes produce "மொலி" for "moli".
+            # Force meaningful variants (Google-IME-like) for language/word usage.
+            "moli": ["மொழி", "மொழியை", "மொழியில்", "மொழியால்", "மொழிகள்", "மொழியுடன்"],
+            "mozhi": ["மொழி", "மொழியை", "மொழியில்", "மொழியால்", "மொழிகள்", "மொழியுடன்"],
         }
         forced = ranked_overrides.get(normalized_input)
         if forced:
@@ -115,15 +120,29 @@ class SuggestService:
                 q,
                 canonical_output,
             )
-            result = [
-                {
-                    "word": canonical_output,
-                    "score": 1.0,
-                    "source": "canonical",
-                }
-            ]
+            # For canonical outputs, optionally expand to multiple useful variants (Google-IME-like),
+            # but keep very short tokens strict to avoid junk (e.g., mu -> "முயில்" style accidents).
+            variants = [canonical_output]
+            if input_length >= 3 and limit >= 6:
+                variants = expand_common_variants(canonical_output, max_variants=limit) or [canonical_output]
+
+            result = []
+            for idx, w in enumerate(variants[:limit]):
+                # Keep only structurally valid expansions
+                if is_structurally_invalid_tamil(w):
+                    continue
+                score = max(0.55, 1.0 - idx * 0.1)
+                result.append(
+                    {
+                        "word": w,
+                        "score": 1.0 if idx == 0 else round(score, 2),
+                        "source": "canonical",
+                    }
+                )
+            if not result:
+                result = [{"word": canonical_output, "score": 1.0, "source": "canonical"}]
             self.cache.set(cache_key, result)
-            metadata["final_count"] = 1
+            metadata["final_count"] = len(result)
             metadata["source"] = "canonical"
             latency_ms = (time.perf_counter() - start_time) * 1000
             metadata["latency_ms"] = latency_ms
@@ -201,6 +220,39 @@ class SuggestService:
 
         # Sort by score (descending)
         scored_candidates.sort(key=lambda x: x["score"], reverse=True)
+
+        # Step 8.5 (new): Auto-expand variants to provide "many suggestions" like Google IME.
+        # We only do this for word-level modes and for non-trivial inputs (avoid junk on very short tokens).
+        if input_length >= 3 and limit >= 6 and scored_candidates:
+            expanded = []
+            # Expand from top-1 (and optionally top-2) base candidates
+            bases = [scored_candidates[0]]
+            if len(scored_candidates) > 1:
+                bases.append(scored_candidates[1])
+
+            existing = {x["word"] for x in scored_candidates}
+            for base in bases:
+                base_word = base.get("word", "")
+                base_score = float(base.get("score", 0.6) or 0.6)
+                variants = expand_common_variants(base_word, max_variants=max(6, limit))
+                for idx, v in enumerate(variants):
+                    if v in existing:
+                        continue
+                    # Keep only structurally valid expansions
+                    if is_structurally_invalid_tamil(v):
+                        continue
+                    # Slightly decay score for expansions, keep stable ordering
+                    s = max(0.3, min(0.98, base_score * 0.92 - (idx * 0.03)))
+                    expanded.append({"word": v, "score": s})
+                    existing.add(v)
+                    if len(expanded) >= (limit * 2):
+                        break
+                if len(expanded) >= (limit * 2):
+                    break
+
+            if expanded:
+                scored_candidates.extend(expanded)
+                scored_candidates.sort(key=lambda x: x["score"], reverse=True)
 
         # Step 9: Return top N (respect limit, but ensure we return meaningful results)
         final = scored_candidates[:limit]
