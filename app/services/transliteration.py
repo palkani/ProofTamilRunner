@@ -52,9 +52,18 @@ def filter_tamil_suggestions(suggestions: List[dict], token: str) -> List[dict]:
 
     token_len = len(token or "")
 
-    # For short tokens (1-2 chars), limit to 3 chars max
-    # For longer tokens, allow up to 6 chars
-    max_len = 3 if token_len <= 2 else 6
+    # Length gating:
+    # Previous implementation capped all longer tokens to 6 chars, which accidentally filtered out
+    # many correct colloquial forms (e.g., "padichiya" -> "படிச்சியா" is >6 chars).
+    # Keep short tokens strict, but allow longer tokens to produce longer words.
+    #
+    # Heuristic: allow up to token_len+3, capped at 14.
+    if token_len <= 2:
+        max_len = 3
+    elif token_len <= 4:
+        max_len = 8
+    else:
+        max_len = min(14, token_len + 3)
 
     # For longer Roman inputs, avoid ultra-short Tamil fragments (common source of junk suggestions)
     # Examples: "enathu" should not return "எந"/"என"
@@ -109,24 +118,51 @@ def ends_with_tamil_vowel(word: str) -> bool:
 
 
 def _latin_variants(text: str, max_variants: int = 64) -> List[str]:
+    """
+    Generate roman input variants to match colloquial/spoken Tamil patterns.
+    Similar to Google Tamil IME, which tolerates many spelling variations.
+    """
     text = (text or "").strip().lower()
     if not text:
         return []
     variants: Set[str] = set()
     variants.add(text)
 
+    # Vowel lengthening (single->double)
     vowel_map = {"a": "aa", "i": "ii", "u": "uu", "e": "ee", "o": "oo"}
     for i, ch in enumerate(text):
         if ch in vowel_map:
             variants.add(text[: i + 1] + vowel_map[ch] + text[i + 1 :])
 
+    # Consonant gemination (common in colloquial Tamil)
     variants.add(text.replace("t", "tt"))
     variants.add(text.replace("th", "t"))
     variants.add(text.replace("d", "t"))
+    variants.add(text.replace("n", "nn"))
+    variants.add(text.replace("l", "ll"))
 
-    endings = ["i", "ai", "a", "u", "oo", "ta", "tai", "tta", "ttai", "di", "ti"]
+    # Spoken-style consonant clusters
+    # Example: "padichiya" -> try "padichchiya" / "padichiya" / "padicha" / "padichen"
+    if "ch" in text:
+        variants.add(text.replace("ch", "chch"))  # chi -> chchi
+        variants.add(text.replace("ch", "c"))     # soft c
+    if "tt" in text:
+        variants.add(text.replace("tt", "t"))
+
+    # Common suffix expansions (question/past markers)
+    endings = ["i", "ai", "a", "u", "oo", "ta", "tai", "tta", "ttai", "di", "ti", "ya", "yaa", "en", "een"]
     for end in endings:
         variants.add(text + end)
+
+    # Contracted forms (spoken Tamil)
+    # "padichiya" can also be "padicha", "padichen", etc.
+    if text.endswith("iya"):
+        variants.add(text[:-3] + "a")
+        variants.add(text[:-3] + "en")
+        variants.add(text[:-3] + "ya")
+    if text.endswith("chi"):
+        variants.add(text + "ya")
+        variants.add(text + "a")
 
     return list(list(variants)[:max_variants])
 

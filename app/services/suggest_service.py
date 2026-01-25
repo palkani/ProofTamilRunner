@@ -102,6 +102,11 @@ class SuggestService:
             # Force meaningful variants (Google-IME-like) for language/word usage.
             "moli": ["மொழி", "மொழியை", "மொழியில்", "மொழியால்", "மொழிகள்", "மொழியுடன்"],
             "mozhi": ["மொழி", "மொழியை", "மொழியில்", "மொழியால்", "மொழிகள்", "மொழியுடன்"],
+            # Colloquial/spoken past tense patterns (-ichiya, -chiya question forms)
+            # padichiya -> படிச்சியா (did you study/read? - spoken Tamil)
+            "padichiya": ["படிச்சியா", "படிச்சிய", "படித்தியா", "படிச்சா", "படிச்சீயா", "படிச்சேன்", "படிச்சான்", "படிச்சாங்க"],
+            "padicha": ["படிச்சா", "படிச்ச", "படித்தா", "படிச்சான்", "படிச்சாங்க"],
+            "padichen": ["படிச்சேன்", "படிச்சேனா", "படித்தேன்"],
         }
         forced = ranked_overrides.get(normalized_input)
         if forced:
@@ -183,6 +188,16 @@ class SuggestService:
             raw_candidates = []
 
         metadata["raw_candidate_count"] = len(raw_candidates)
+
+        # DEBUG: Log the first few raw candidates for problematic queries
+        if input_length >= 7 or normalized_input in {"padichiya", "nanban", "sapadu", "soru", "amma"}:
+            logger.info(
+                "suggest_raw_candidates request_id=%s q=%s count=%d sample=%s",
+                request_id,
+                q,
+                len(raw_candidates),
+                raw_candidates[:5] if len(raw_candidates) > 0 else []
+            )
 
         # Step 4: Unicode normalization
         normalized_candidates = []
