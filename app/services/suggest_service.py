@@ -21,6 +21,7 @@ from app.services.tamil_linguistics import (
     expand_common_variants,
 )
 from app.services.canonical_map import get_canonical
+from app.services.corpus_db import get_corpus
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,53 @@ class SuggestService:
             )
             return result, metadata
 
-        # Step 3: Candidate generation via Aksharamukha
+        # Step 2.5: CORPUS DATABASE QUERY (PRIMARY SOURCE)
+        # Query the corpus DB BEFORE calling Aksharamukha.
+        # This ensures we return high-quality, user-validated Tamil words first.
+        corpus = get_corpus()
+        corpus_suggestions = []
+        try:
+            corpus_suggestions = corpus.suggest_words(normalized_input, limit=limit)
+            if corpus_suggestions:
+                logger.info(
+                    "suggest_corpus_hit request_id=%s q=%s count=%d sample=%s",
+                    request_id,
+                    q,
+                    len(corpus_suggestions),
+                    corpus_suggestions[:3]
+                )
+                # Corpus returned results - format and return immediately
+                result = []
+                for idx, (tamil_word, score) in enumerate(corpus_suggestions):
+                    result.append({
+                        "word": tamil_word,
+                        "score": score,
+                        "source": "corpus_db"
+                    })
+                self.cache.set(cache_key, result)
+                latency_ms = (time.perf_counter() - start_time) * 1000
+                metadata["source"] = "corpus_db"
+                metadata["final_count"] = len(result)
+                metadata["latency_ms"] = round(latency_ms, 2)
+                logger.info(
+                    "suggest_corpus_return request_id=%s q=%s latency_ms=%.2f count=%d",
+                    request_id,
+                    q,
+                    latency_ms,
+                    len(result)
+                )
+                return result, metadata
+        except Exception as e:
+            logger.warning(
+                "suggest_corpus_error request_id=%s q=%s error=%s",
+                request_id,
+                q,
+                str(e)
+            )
+            # Continue to Aksharamukha fallback
+
+        # Step 3: Candidate generation via Aksharamukha (FALLBACK)
+        # Only reach here if corpus didn't have suggestions
         raw_candidates = []
         try:
             akshara_outputs = await self.adapter.transliterate(normalized_input, mode)
