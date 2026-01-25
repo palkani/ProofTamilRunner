@@ -93,6 +93,8 @@ class SuggestService:
         # These are returned exactly, to guarantee correctness and UX consistency.
         ranked_overrides = {
             "enpathu": ["என்பது", "எண்பது", "எண்பத்து", "என்பத்து", "எண்பத"],
+            # Very common kinship term: ensure we show real word forms (avoid partial "அம்ம").
+            "amma": ["அம்மா", "அம்மாவை", "அம்மாவின்", "அம்மாவுக்கு", "அம்மாவுடன்", "அம்மாவிடம்", "அம்மாவுடைய", "அம்மாக்கள்"],
             # Google-IME-like variants for common nouns
             # nanban -> friend (Tamil): provide common inflections and related forms
             "nanban": ["நண்பன்", "நண்பா", "நண்பனை", "நண்பனே", "நண்பர்", "நண்பர்கள்", "நண்பனுக்கு", "நண்பனுடன்", "நண்பனிடம்", "நண்பனுடைய"],
