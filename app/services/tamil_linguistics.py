@@ -248,8 +248,18 @@ def expand_common_variants(base: str, max_variants: int = 10) -> List[str]:
 
     add(base)
 
-    # If lemma ends with a vowel sign, use "ய" joiner for common case forms (e.g., மொழி -> மொழியை).
+    # If lemma ends with a vowel sign, sometimes a "ய" joiner forms correct case markers
+    # (e.g., மொழி -> மொழியை, கதை -> கதையை). However, doing this for *all* vowel endings
+    # produces many incorrect words (e.g., சோறு -> சோறுயை is wrong; it should be சோற்றை).
+    #
+    # Be conservative: only apply "ய" joiner for endings that commonly take it.
     if ends_with_tamil_vowel(base):
+        last = base[-1]
+        # Safe endings for "ய" joiner (common in practice): i/ii/ai/e/ee signs.
+        # Do NOT generate "…ுய…" / "…ோய…" style variants from u/uu/o/oo/aa endings.
+        y_joiner_safe = {"ி", "ீ", "ை", "ெ", "ே"}
+        if last not in y_joiner_safe:
+            return out[:max_variants]
         for suf in ["யை", "யில்", "யால்", "யுடன்", "யிடம்", "யுடைய", "கள்", "களில்", "களுடன்"]:
             if len(out) >= max_variants:
                 break

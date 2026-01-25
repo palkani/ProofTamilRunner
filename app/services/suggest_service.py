@@ -126,7 +126,10 @@ class SuggestService:
             # but keep very short tokens strict to avoid junk (e.g., mu -> "முயில்" style accidents).
             variants = [canonical_output]
             if input_length >= 3 and limit >= 6:
-                variants = expand_common_variants(canonical_output, max_variants=limit) or [canonical_output]
+                # Only keep expansions that look real (dictionary-backed) to avoid generating
+                # invalid words for some vowel-ending lemmas.
+                expanded = expand_common_variants(canonical_output, max_variants=limit) or [canonical_output]
+                variants = [canonical_output] + [v for v in expanded if v != canonical_output and has_freq(v)]
 
             result = []
             for idx, w in enumerate(variants[:limit]):
@@ -215,8 +218,92 @@ class SuggestService:
             return [], metadata
 
         # PART C: Soft scoring (no hard filtering beyond structural validity)
+        # Step 5.5 (new): Confusable repair.
+        # Aksharamukha sometimes returns plausible-but-wrong variants (short/long vowels, ர/ற, etc.).
+        # We generate a small set of "nearby" Tamil-script variants and keep only those that appear
+        # in our frequency dictionary, then let the scorer/ranker do the rest.
+        def expand_confusable_variants(word: str, max_out: int = 32) -> List[str]:
+            w0 = normalize_unicode(word)
+            if not w0:
+                return []
+            seen = set()
+            out = []
+
+            def add(w: str):
+                w = normalize_unicode(w)
+                if not w or w in seen:
+                    return
+                seen.add(w)
+                out.append(w)
+
+            add(w0)
+
+            # Focus edits on the tail to reduce blow-up.
+            chars = list(w0)
+            tail_start = max(0, len(chars) - 6)
+            positions = range(tail_start, len(chars))
+
+            # Prefer generating long-vowel alternatives and common confusable consonants.
+            swap1 = {
+                "ொ": "ோ",
+                "ெ": "ே",
+                "ி": "ீ",
+                "ு": "ூ",
+                "ர": "ற",
+                "ற": "ர",
+            }
+
+            # Single edits
+            for i in positions:
+                ch = chars[i]
+                rep = swap1.get(ch)
+                if not rep:
+                    continue
+                c2 = chars.copy()
+                c2[i] = rep
+                add("".join(c2))
+                if len(out) >= max_out:
+                    return out
+
+            # Two edits (bounded): apply one more edit on already-generated variants.
+            for base in out[:]:
+                if len(out) >= max_out:
+                    break
+                bchars = list(base)
+                for i in range(max(0, len(bchars) - 6), len(bchars)):
+                    ch = bchars[i]
+                    rep = swap1.get(ch)
+                    if not rep:
+                        continue
+                    c2 = bchars.copy()
+                    c2[i] = rep
+                    add("".join(c2))
+                    if len(out) >= max_out:
+                        break
+
+            return out
+
         scored_candidates = []
-        for cand in structurally_valid:
+        # Seed repair from the first few candidates only.
+        repaired = list(structurally_valid)
+        existing = set(repaired)
+        for seed in structurally_valid[:6]:
+            for v in expand_confusable_variants(seed):
+                if v in existing:
+                    continue
+                # Only keep variants that are dictionary-backed; this prunes nonsense hard.
+                if not has_freq(v):
+                    continue
+                if is_structurally_invalid_tamil(v):
+                    continue
+                repaired.append(v)
+                existing.add(v)
+                if len(repaired) >= (len(structurally_valid) + 40):
+                    break
+            if len(repaired) >= (len(structurally_valid) + 40):
+                break
+
+        for cand in repaired:
             score = self._rank_candidate(cand, normalized_input, prev, input_length)
             scored_candidates.append({"word": cand, "score": score})
 
@@ -242,6 +329,9 @@ class SuggestService:
                         continue
                     # Keep only structurally valid expansions
                     if is_structurally_invalid_tamil(v):
+                        continue
+                    # Keep expansions dictionary-backed; avoids incorrect "…ுய…" garbage forms.
+                    if not has_freq(v):
                         continue
                     # Slightly decay score for expansions, keep stable ordering
                     s = max(0.3, min(0.98, base_score * 0.92 - (idx * 0.03)))
